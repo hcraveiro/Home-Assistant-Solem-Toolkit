@@ -1,160 +1,139 @@
+"""Service handlers for Solem Toolkit."""
+
+from __future__ import annotations
+
 import logging
+
 from homeassistant.core import HomeAssistant, ServiceCall
-import sys
-import asyncio
-import struct
-from bleak import BleakClient
-from .const import DOMAIN
+from homeassistant.exceptions import HomeAssistantError
+
+from .api import APIConnectionError, SolemAPI
+from .const import DEFAULT_BLUETOOTH_TIMEOUT, DOMAIN, MIN_BLUETOOTH_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
-characteristic_uuid = '108b0002-eab5-bc09-d0ea-0b8f467ce8ee'
 
-async def async_list_characteristics(call: ServiceCall):
+
+def _get_timeout(call: ServiceCall) -> int:
+    timeout = call.data.get("bluetooth_timeout", DEFAULT_BLUETOOTH_TIMEOUT)
+    try:
+        timeout_int = int(timeout)
+    except (TypeError, ValueError) as exc:
+        raise HomeAssistantError("Invalid bluetooth_timeout") from exc
+    return max(MIN_BLUETOOTH_TIMEOUT, timeout_int)
+
+
+async def async_list_characteristics(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug("Listing services")
-            services = client.services
-            for service in services:
-                _LOGGER.info(f"Service: {service.uuid}")
-                for char in service.characteristics:
-                    _LOGGER.info(f"  Characteristic: {char.uuid}")
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        result = await api.list_characteristics()
+        # Log output so the user can read it from HA logs.
+        for svc_uuid, chars in result.items():
+            _LOGGER.info("Service: %s", svc_uuid)
+            for c in chars:
+                _LOGGER.info("  Characteristic: %s (properties=%s)", c["uuid"], c["properties"])
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
 
-async def async_turn_off_permanent(call: ServiceCall):
+async def async_turn_off_permanent(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug("writing command: Turn off permanent")
-            command = struct.pack(">HBBBH", 0x3105, 0xc0, 0x00, 0x00, 0x0000)
-            await client.write_gatt_char(characteristic_uuid, command)
-            
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.turn_off_permanent()
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
 
-async def async_turn_off_x_days(call: ServiceCall):
+async def async_turn_off_x_days(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    days = call.data.get("days")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug("writing command: Turn off permanent")
-            command = struct.pack(">HBBBH", 0x3105, 0xc0, 0x00, days & 0xFF, 0x0000)
-            await client.write_gatt_char(characteristic_uuid, command)
-            
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
+    days = int(call.data.get("days", 1))
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.turn_off_x_days(days)
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
-        
-async def async_turn_on(call: ServiceCall):
+
+async def async_turn_on(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug("writing command: Turn on")
-            command = struct.pack(">HBBBH",0x3105,0xa0,0x00,0x01,0x0000)
-            await client.write_gatt_char(characteristic_uuid, command)
-            
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.turn_on()
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
 
-async def async_sprinkle_station_x_for_y_minutes(call: ServiceCall):
+async def async_sprinkle_station_x_for_y_minutes(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    station = call.data.get("station")
-    minutes = call.data.get("minutes")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug(f"writing command: Sprinkle station {station} for {minutes} minutes")
-            command = struct.pack(">HBBBH",0x3105,0x12,station & 0xFF,0x00,(minutes * 60) & 0xFFFF)
-            await client.write_gatt_char(characteristic_uuid, command)
+    station = int(call.data.get("station", 1))
+    minutes = int(call.data.get("minutes", 1))
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.sprinkle_station_x_for_y_minutes(station, minutes)
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
-
-async def async_sprinkle_all_stations_for_y_minutes(call: ServiceCall):
+async def async_sprinkle_all_stations_for_y_minutes(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    minutes = call.data.get("minutes")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug(f"writing command: Sprinkle all stations for {minutes} minutes")
-            command = struct.pack(">HBBBH", 0x3105, 0x11, 0x00, 0x00,(minutes * 60) & 0xFFFF)
-            await client.write_gatt_char(characteristic_uuid, command)
+    minutes = int(call.data.get("minutes", 1))
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.sprinkle_all_stations_for_y_minutes(minutes)
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
-        
-async def async_run_program_x(call: ServiceCall):
+async def async_run_program_x(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    program = call.data.get("program")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug(f"writing command: Run program {program}")
-            command = struct.pack(">HBBBH", 0x3105, 0x14, 0x00, program & 0xFF, 0x0000)
-            await client.write_gatt_char(characteristic_uuid, command)
+    program = int(call.data.get("program", 1))
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.run_program_x(program)
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
-
-async def async_stop_manual_sprinkle(call: ServiceCall):
+async def async_stop_manual_sprinkle(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
-    async with BleakClient(device_mac, timeout=20.0) as client:
-        if client.is_connected:
-            _LOGGER.debug("Connected: True")
-            _LOGGER.debug("writing command: Stop manual sprinkle")
-            command = struct.pack(">HBBBH",0x3105,0x15,0x00,0xff,0x0000)
-            await client.write_gatt_char(characteristic_uuid, command)
+    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        await api.stop_manual_sprinkle()
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
-            _LOGGER.debug("committing")
-            command = struct.pack(">BB", 0x3b, 0x00)
-            await client.write_gatt_char(characteristic_uuid, command)
 
-            _LOGGER.debug("Success")
-        else:
-            _LOGGER.error("Failed connecting!")
+def async_setup_services(hass: HomeAssistant) -> None:
+    async def _handle_list_characteristics(call: ServiceCall) -> None:
+        await async_list_characteristics(hass, call)
 
-def async_setup_services(hass: HomeAssistant):
-    hass.services.async_register(DOMAIN, "list_characteristics", async_list_characteristics)
-    hass.services.async_register(DOMAIN, "turn_off_permanent", async_turn_off_permanent)
-    hass.services.async_register(DOMAIN, "turn_off_x_days", async_turn_off_x_days)
-    hass.services.async_register(DOMAIN, "turn_on", async_turn_on)
-    hass.services.async_register(DOMAIN, "sprinkle_station_x_for_y_minutes", async_sprinkle_station_x_for_y_minutes)
-    hass.services.async_register(DOMAIN, "sprinkle_all_stations_for_y_minutes", async_sprinkle_all_stations_for_y_minutes)
-    hass.services.async_register(DOMAIN, "run_program_x", async_run_program_x)
-    hass.services.async_register(DOMAIN, "stop_manual_sprinkle", async_stop_manual_sprinkle)
+    async def _handle_turn_off_permanent(call: ServiceCall) -> None:
+        await async_turn_off_permanent(hass, call)
+
+    async def _handle_turn_off_x_days(call: ServiceCall) -> None:
+        await async_turn_off_x_days(hass, call)
+
+    async def _handle_turn_on(call: ServiceCall) -> None:
+        await async_turn_on(hass, call)
+
+    async def _handle_sprinkle_station(call: ServiceCall) -> None:
+        await async_sprinkle_station_x_for_y_minutes(hass, call)
+
+    async def _handle_sprinkle_all(call: ServiceCall) -> None:
+        await async_sprinkle_all_stations_for_y_minutes(hass, call)
+
+    async def _handle_run_program(call: ServiceCall) -> None:
+        await async_run_program_x(hass, call)
+
+    async def _handle_stop_manual(call: ServiceCall) -> None:
+        await async_stop_manual_sprinkle(hass, call)
+
+    hass.services.async_register(DOMAIN, "list_characteristics", _handle_list_characteristics)
+    hass.services.async_register(DOMAIN, "turn_off_permanent", _handle_turn_off_permanent)
+    hass.services.async_register(DOMAIN, "turn_off_x_days", _handle_turn_off_x_days)
+    hass.services.async_register(DOMAIN, "turn_on", _handle_turn_on)
+    hass.services.async_register(DOMAIN, "sprinkle_station_x_for_y_minutes", _handle_sprinkle_station)
+    hass.services.async_register(DOMAIN, "sprinkle_all_stations_for_y_minutes", _handle_sprinkle_all)
+    hass.services.async_register(DOMAIN, "run_program_x", _handle_run_program)
+    hass.services.async_register(DOMAIN, "stop_manual_sprinkle", _handle_stop_manual)
