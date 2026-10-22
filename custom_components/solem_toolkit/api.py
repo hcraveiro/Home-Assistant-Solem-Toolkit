@@ -20,15 +20,69 @@ from bleak_retry_connector import (
 )
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
 
-from .const import CHARACTERISTIC_UUID, DEFAULT_BLUETOOTH_TIMEOUT
+from . import protocol
+from .const import (
+    BLIND_WRITE_SETTLE_SECONDS,
+    CHARACTERISTIC_UUID,
+    COMMAND_ACK_TIMEOUT,
+    COMMAND_MAX_ATTEMPTS,
+    DEFAULT_BLUETOOTH_TIMEOUT,
+    EVENT_DEVICE_STATUS,
+    NOTIFY_CHARACTERISTIC_UUID,
+    NOTIFY_SUBSCRIBE_TIMEOUT,
+    RETRY_BACKOFF_SECONDS,
+    STATUS_COLLECT_SECONDS,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+# One lock per device MAC, shared by every SolemAPI instance/service call, so
+# overlapping commands are serialized instead of racing for the same BLE slot
+# (this is what causes "Connection request ignored, state: CONNECTING" floods
+# on ESPHome Bluetooth proxies).
+_DEVICE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _get_device_lock(mac_address: str) -> asyncio.Lock:
+    """Return the shared connection lock for a given device MAC address."""
+    key = (mac_address or "").lower()
+    lock = _DEVICE_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _DEVICE_LOCKS[key] = lock
+    return lock
 
 
 class APIConnectionError(Exception):
     """Exception raised when a BLE connection or write fails."""
+
+
+class _NotifyCollector:
+    """Signals the first device reply and keeps every reply that follows.
+
+    The ack logic only needs to know that *something* came back, which is why
+    this used to be a bare asyncio.Event with the payload thrown away. But the
+    device answers the commit with its full status - state, running station,
+    seconds left, battery - so the bytes were being discarded 18 of them at a
+    time, on every single command. Keeping them costs no extra radio traffic.
+    """
+
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.frames: list[bytes] = []
+
+    def on_notify(self, _handle: int, data: bytearray) -> None:
+        # Runs in bleak's callback context: an exception here would surface as
+        # an unrelated BLE error, or be swallowed, so nothing in it may fail.
+        # Signal first, so a malformed payload can never cost us an ack.
+        self.event.set()
+        try:
+            self.frames.append(bytes(data))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class SolemAPI:
@@ -45,148 +99,509 @@ class SolemAPI:
         self.bluetooth_timeout = bluetooth_timeout
 
         self.characteristic_uuid: str = CHARACTERISTIC_UUID
-        self._conn_lock = asyncio.Lock()
+        self._device_lock = _get_device_lock(mac_address)
+
+        # Last status the device reported, for callers that want to read it
+        # back instead of inferring it from the commands they sent. Note that
+        # a SolemAPI is built per service call, so this lives as long as the
+        # call unless the caller keeps the instance.
+        self.last_status: protocol.SolemStatus | None = None
 
     async def scan_bluetooth(self) -> list[BLEDevice]:
         """Return a list of discovered BLE devices."""
         return await BleakScanner.discover(timeout=5.0)
 
     async def _resolve_ble_device(self) -> BLEDevice:
-        """Resolve a BLEDevice for the configured MAC address."""
-        # First attempt: direct lookup by address (fast-path on most platforms)
-        ble_device: Optional[BLEDevice] = await BleakScanner.find_device_by_address(
-            self.mac_address, timeout=5.0
+        """Resolve a connectable BLEDevice for the configured MAC address.
+
+        Home Assistant keeps a central registry of everything its adapters and
+        Bluetooth proxies can see, including which source can actually open a
+        connection. Asking that registry (instead of running our own
+        `BleakScanner`) matters for two reasons:
+
+        * a fresh scan can return a device advertised by a *non-connectable*
+          source, and handing that to `establish_connection` ends in a long
+          hang followed by `BleakOutOfConnectionSlotsError` while the proxy
+          sits idle, never having been asked to connect;
+        * starting a scan while another integration is connecting fights over
+          the same radio, and ESPHome proxies have to stop scanning to connect.
+        """
+        ble_device: Optional[BLEDevice] = bluetooth.async_ble_device_from_address(
+            self.hass, self.mac_address.upper(), connectable=True
         )
         if ble_device is not None:
             return ble_device
 
-        # Fallback: full scan and manual match (some platforms/proxies behave like this)
-        devices = await BleakScanner.discover(timeout=5.0)
-        for d in devices:
-            if (d.address or "").lower() == self.mac_address.lower():
-                return d
+        # Not in the registry: either out of range, or only seen by a
+        # non-connectable scanner (e.g. a proxy in passive/scan-only mode).
+        if bluetooth.async_scanner_count(self.hass, connectable=True) == 0:
+            raise APIConnectionError(
+                "No connectable Bluetooth adapter or proxy is available to "
+                "Home Assistant"
+            )
 
-        raise APIConnectionError("Device not found! Failed connecting!")
+        raise APIConnectionError(
+            "Device not found: no connectable Bluetooth adapter or proxy has "
+            "seen this device recently (out of range, or the nearest proxy "
+            "cannot accept connections)"
+        )
 
     async def _connect_client(self) -> BleakClient:
-        """Establish a robust connection using bleak-retry-connector."""
-        async with self._conn_lock:
-            ble_device = await self._resolve_ble_device()
-            try:
-                client = await establish_connection(
-                    BleakClient,
-                    ble_device,
-                    name=f"Solem - {self.mac_address}",
-                    timeout=self.bluetooth_timeout,
-                    max_attempts=3,
-                )
-                return client
-            except BleakOutOfConnectionSlotsError as exc:
-                raise APIConnectionError(
-                    "Bluetooth adapter/proxy out of connection slots or device busy/unreachable"
-                ) from exc
-            except (BleakDBusError, TimeoutError, OSError) as exc:
-                raise APIConnectionError("Timeout connecting to device") from exc
-            except Exception as exc:  # noqa: BLE001
-                raise APIConnectionError("Unexpected BLE connection error") from exc
+        """Establish a robust connection using bleak-retry-connector.
+
+        Callers must hold `self._device_lock` for the whole connect-write-disconnect
+        cycle so two commands never fight over the same BLE slot/proxy at once.
+        """
+        _LOGGER.info(
+            "Solem %s - Looking up device on Bluetooth...", self.mac_address)
+        ble_device = await self._resolve_ble_device()
+        # Which adapter/proxy will be used, and how well it hears the device,
+        # is the single most useful thing to know when connections fail.
+        service_info = bluetooth.async_last_service_info(
+            self.hass, self.mac_address.upper(), connectable=True
+        )
+        if service_info is not None:
+            _LOGGER.info(
+                "Solem %s - Device found via %s (RSSI %s dBm), opening connection...",
+                self.mac_address,
+                service_info.source,
+                service_info.rssi,
+            )
+        else:
+            _LOGGER.info(
+                "Solem %s - Device found, opening connection...", self.mac_address
+            )
+        try:
+            # A single attempt here: retries are handled one level up in
+            # `_write_and_commit`, which retries the whole connect-write-commit
+            # cycle. Combining both layers used to multiply worst-case wait time
+            # (3 internal attempts x 2 outer attempts x timeout).
+            client = await establish_connection(
+                BleakClient,
+                ble_device,
+                name=f"Solem - {self.mac_address}",
+                timeout=self.bluetooth_timeout,
+                max_attempts=1,
+            )
+            _LOGGER.info("Solem %s - Connection established.",
+                         self.mac_address)
+            return client
+        except BleakOutOfConnectionSlotsError as exc:
+            _LOGGER.warning(
+                "Solem %s - Bluetooth adapter/proxy has no free connection slots "
+                "(device may be busy or another command is already connecting).",
+                self.mac_address,
+            )
+            raise APIConnectionError(
+                "Bluetooth adapter/proxy out of connection slots or device busy/unreachable"
+            ) from exc
+        except (BleakDBusError, TimeoutError, OSError) as exc:
+            _LOGGER.warning(
+                "Solem %s - Timed out connecting to the device.", self.mac_address
+            )
+            raise APIConnectionError("Timeout connecting to device") from exc
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.warning(
+                "Solem %s - Unexpected error while connecting: %s", self.mac_address, exc
+            )
+            raise APIConnectionError(
+                "Unexpected BLE connection error") from exc
+
+    async def _disconnect_client(self, client: BleakClient) -> None:
+        """Disconnect and log the outcome in human-readable form."""
+        try:
+            await client.disconnect()
+            _LOGGER.info("Solem %s - Connection closed.", self.mac_address)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Solem %s - Error while disconnecting (device may already be gone).",
+                self.mac_address,
+                exc_info=True,
+            )
 
     async def list_characteristics(self) -> dict:
         """Return discovered services/characteristics (debug helper)."""
-        client = await self._connect_client()
-        try:
-            if not client.is_connected:
-                raise APIConnectionError("Failed connecting!")
-
-            # Home Assistant wraps BleakClient (HaBleakClientWrapper) and does not
-            # expose BleakClient.get_services(). After connecting, discovered
-            # services are available via the `services` attribute.
-            services = getattr(client, "services", None)
-            if services is None:
-                # Last-resort fallback for non-HA clients / unexpected wrappers.
-                inner = getattr(client, "_client", None) or getattr(client, "_bleak_client", None)
-                if inner is not None and hasattr(inner, "get_services"):
-                    services = await inner.get_services()
-                else:
-                    raise APIConnectionError("Services not available on this platform/client")
-            result: dict = {}
-            for svc in services:
-                chars = []
-                for c in svc.characteristics:
-                    chars.append(
-                        {
-                            "uuid": str(c.uuid),
-                            "properties": list(c.properties),
-                            "descriptors": [str(d.uuid) for d in c.descriptors],
-                        }
-                    )
-                result[str(svc.uuid)] = chars
-            return result
-        finally:
+        async with self._device_lock:
+            client = await self._connect_client()
             try:
-                await client.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
+                if not client.is_connected:
+                    raise APIConnectionError("Failed connecting!")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.4, min=0.4, max=2))
+                # Home Assistant wraps BleakClient (HaBleakClientWrapper) and does not
+                # expose BleakClient.get_services(). After connecting, discovered
+                # services are available via the `services` attribute.
+                services = getattr(client, "services", None)
+                if services is None:
+                    # Last-resort fallback for non-HA clients / unexpected wrappers.
+                    inner = getattr(client, "_client", None) or getattr(
+                        client, "_bleak_client", None)
+                    if inner is not None and hasattr(inner, "get_services"):
+                        services = await inner.get_services()
+                    else:
+                        raise APIConnectionError(
+                            "Services not available on this platform/client")
+                result: dict = {}
+                for svc in services:
+                    chars = []
+                    for c in svc.characteristics:
+                        chars.append(
+                            {
+                                "uuid": str(c.uuid),
+                                "properties": list(c.properties),
+                                "descriptors": [str(d.uuid) for d in c.descriptors],
+                            }
+                        )
+                    result[str(svc.uuid)] = chars
+                return result
+            finally:
+                await self._disconnect_client(client)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.4, min=0.4, max=2),
+        reraise=True,
+    )
     async def _write_with_auth_retry(self, client: BleakClient, payload: bytes) -> None:
-        """Write with a small retry loop (Solem can be picky right after connect)."""
+        """Write with a small retry loop (Solem can be picky right after connect).
+
+        `reraise=True` is required: without it, tenacity wraps the final failure
+        in its own RetryError instead of re-raising it, which would let the
+        error slip past the `except APIConnectionError` handling one level up.
+        """
         if not client.is_connected:
             raise APIConnectionError("Client not connected")
 
         await client.write_gatt_char(self.characteristic_uuid, payload, response=False)
 
-    async def _write_and_commit(self, command: bytes) -> None:
-        """Write a command then commit it (Solem protocol)."""
-        client = await self._connect_client()
+    async def _subscribe_ack(self, client: BleakClient) -> _NotifyCollector | None:
+        """Subscribe to the notify characteristic BEFORE sending a command.
+
+        This must happen before the command is written: the device can reply
+        within milliseconds, and any notification sent before we subscribe is
+        lost forever (BLE does not queue notifications for late subscribers).
+
+        Returns the collector to wait on, or None if this device has no notify
+        characteristic at all (then the command can only be sent blindly).
+        Raises APIConnectionError if subscribing *times out*, which means the
+        link is not usable rather than the device not supporting notifications.
+        """
+        collector = _NotifyCollector()
+
         try:
-            if not client.is_connected:
-                raise APIConnectionError("Failed connecting!")
-            await self._write_with_auth_retry(client, command)
-            # Commit frame
-            commit = struct.pack(">BB", 0x3B, 0x00)
-            await self._write_with_auth_retry(client, commit)
+            # Bounded: enabling notifications (a descriptor write) has been seen
+            # to hang for 15s+ on a flaky proxy connection, tying up the link
+            # long enough for the device to drop it before the real command
+            # is even sent.
+            await asyncio.wait_for(
+                client.start_notify(
+                    NOTIFY_CHARACTERISTIC_UUID, collector.on_notify),
+                timeout=NOTIFY_SUBSCRIBE_TIMEOUT,
+            )
+            return collector
+        except asyncio.TimeoutError as exc:
+            # The connection is open but nothing gets through it - seen when an
+            # ESPHome proxy runs a WiFi scan and starves the shared radio.
+            # Writing the command now would send it into the void while the
+            # service call reports success, so fail and let the caller retry.
+            raise APIConnectionError(
+                "Timed out enabling notifications; the link is open but not "
+                "usable"
+            ) from exc
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Solem %s - Notifications not available, skipping ack wait.",
+                self.mac_address,
+            )
+            return None
+
+    async def _await_ack(
+        self,
+        client: BleakClient,
+        collector: _NotifyCollector | None,
+        collect_seconds: float = 0.0,
+    ) -> None:
+        """Wait for the device reply subscribed to via `_subscribe_ack`.
+
+        Raises APIConnectionError if the ack does not arrive: commands are
+        written without a response, so the write "succeeding" only means the
+        adapter (or proxy) accepted the packet, not that the device got it.
+        Without the ack there is no evidence the command was applied, and
+        reporting success anyway is how a Stop was logged as sent while the
+        station kept watering (24/09/2026). Every command is an absolute
+        setting, so the caller can safely retry.
+        """
+        if collector is None:
+            # No notify characteristic: nothing can confirm anything. Give the
+            # queued packets time to actually go on air, because a write
+            # without response returns before transmission and disconnecting
+            # immediately can drop the command.
+            await asyncio.sleep(BLIND_WRITE_SETTLE_SECONDS)
+            _LOGGER.warning(
+                "Solem %s - Command sent without confirmation: this device "
+                "does not expose the notification characteristic.",
+                self.mac_address,
+            )
+            return
+
+        try:
+            await asyncio.wait_for(collector.event.wait(), timeout=COMMAND_ACK_TIMEOUT)
+            _LOGGER.info(
+                "Solem %s - Device acknowledged the command.", self.mac_address)
+            if collect_seconds > 0:
+                # Only when the point of the connection was to read: the reply
+                # arrives in three chunks and the ack fires on the first.
+                await asyncio.sleep(collect_seconds)
+        except asyncio.TimeoutError as exc:
+            raise APIConnectionError(
+                f"No acknowledgement from the device within "
+                f"{COMMAND_ACK_TIMEOUT}s; the command was not applied"
+            ) from exc
         finally:
             try:
-                await client.disconnect()
+                await client.stop_notify(NOTIFY_CHARACTERISTIC_UUID)
             except Exception:  # noqa: BLE001
                 pass
 
+    async def _write_and_commit(
+        self,
+        command: bytes,
+        description: str,
+        *,
+        commit: bool = True,
+        collect_seconds: float = 0.0,
+    ) -> list[bytes]:
+        """Write a command then commit it (Solem protocol).
+
+        Retries the whole connect-write-commit cycle on connection errors *and*
+        on a missing acknowledgement, since a single dropped/refused BLE
+        connection (common with ESPHome Bluetooth proxies) should not fail the
+        command outright. Only raises once every attempt has failed, so a
+        successful return means the device confirmed the command.
+
+        Returns the raw notification frames of the successful attempt. Callers
+        that only send commands can ignore them; `read_status()` is the one
+        that cares. `commit=False` skips the trailing 0x3B write for a command
+        that *is* the status request, and `collect_seconds` keeps the link open
+        long enough for a multi-chunk reply to finish arriving.
+        """
+        if self._device_lock.locked():
+            _LOGGER.info(
+                "Solem %s - Another command is already in progress, queuing '%s'...",
+                self.mac_address,
+                description,
+            )
+
+        async with self._device_lock:
+            last_error: APIConnectionError | None = None
+            max_attempts = COMMAND_MAX_ATTEMPTS
+
+            for attempt in range(1, max_attempts + 1):
+                if attempt > 1:
+                    _LOGGER.warning(
+                        "Solem %s - Retrying command '%s' (attempt %s/%s) after: %s",
+                        self.mac_address,
+                        description,
+                        attempt,
+                        max_attempts,
+                        last_error,
+                    )
+                    # Give the adapter/proxy time to finish tearing down the
+                    # failed link before asking it for a new one.
+                    await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+
+                try:
+                    client = await self._connect_client()
+                except APIConnectionError as exc:
+                    last_error = exc
+                    continue
+
+                try:
+                    if not client.is_connected:
+                        raise APIConnectionError("Failed connecting!")
+
+                    # Subscribe before writing: the device can reply within
+                    # milliseconds, before we would otherwise be listening.
+                    collector = await self._subscribe_ack(client)
+
+                    _LOGGER.info(
+                        "Solem %s - Sending command: %s (payload=%s)",
+                        self.mac_address,
+                        description,
+                        command.hex(),
+                    )
+                    await self._write_with_auth_retry(client, command)
+
+                    if commit:
+                        _LOGGER.info(
+                            "Solem %s - Command sent, committing...", self.mac_address)
+                        await self._write_with_auth_retry(
+                            client, protocol.STATUS_REQUEST)
+
+                    await self._await_ack(client, collector, collect_seconds)
+
+                    frames = list(collector.frames) if collector else []
+                    self._log_status(frames, description)
+                    return frames
+                except APIConnectionError as exc:
+                    last_error = exc
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    # Any other BLE-layer failure (e.g. a write that fails after
+                    # the connection silently drops) must also go through our
+                    # retry/logging path instead of escaping uncaught.
+                    last_error = APIConnectionError(str(exc))
+                    continue
+                finally:
+                    await self._disconnect_client(client)
+
+            _LOGGER.error(
+                "Solem %s - Command '%s' failed after %s attempt(s): %s",
+                self.mac_address,
+                description,
+                max_attempts,
+                last_error,
+            )
+            raise last_error or APIConnectionError("Command failed")
+
+    def _log_status(self, frames: list[bytes], description: str) -> None:
+        """Decode the device reply and write it to the log.
+
+        Never raises: this runs after the command has already succeeded, and a
+        decoding problem must not turn a confirmed command into a failure. The
+        payload layout was reconstructed from one capture of one firmware
+        version, so being wrong about it is a realistic outcome - and the right
+        price for being wrong is a missing log line, nothing more.
+        """
+        if not frames:
+            return
+
+        try:
+            status = protocol.decode_status(frames)
+            if status is None:
+                # Normal for replies we don't decode yet (station names,
+                # programs, device info), hence debug rather than warning.
+                _LOGGER.debug(
+                    "Solem %s - No status in the reply to '%s': %s",
+                    self.mac_address,
+                    description,
+                    [frame.hex() for frame in frames],
+                )
+                return
+
+            self.last_status = status
+            _LOGGER.info(
+                "Solem %s - Device reports: %s",
+                self.mac_address,
+                protocol.describe_status(status),
+            )
+            # The raw payload is what makes a surprising log line checkable
+            # months later, when the only thing left of the event is the log.
+            _LOGGER.debug(
+                "Solem %s - Status payload after '%s': %s",
+                self.mac_address,
+                description,
+                status.payload_hex,
+            )
+            self._fire_status_event(status)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "Solem %s - Could not decode the reply to '%s' (%s): %s",
+                self.mac_address,
+                description,
+                exc,
+                [frame.hex() for frame in frames],
+            )
+
+    def _fire_status_event(self, status: protocol.SolemStatus) -> None:
+        """Publish the reading on the event bus.
+
+        This is what makes the status visible outside the log: an integration
+        without a config entry has no entity platform, so a dashboard gets the
+        value through a trigger-based template sensor listening for this event
+        (see DEPLOY.md). It fires after *every* command too, not just an
+        explicit read, because the device sends its status unprompted - so the
+        dashboard stays current at no cost in radio time.
+
+        Failures are swallowed for the same reason as the rest of _log_status:
+        a command that reached the device must not be reported as failed
+        because a notification about it could not be published.
+        """
+        data = protocol.as_event_data(status)
+        data["device_mac"] = self.mac_address
+        try:
+            self.hass.bus.async_fire(EVENT_DEVICE_STATUS, data)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug(
+                "Solem %s - Could not fire the %s event.",
+                self.mac_address,
+                EVENT_DEVICE_STATUS,
+                exc_info=True,
+            )
+
     async def turn_on(self) -> None:
         """Turn on controller (enable watering)."""
-        command = struct.pack(">HBBBH", 0x3105, 0x12, 0xFF, 0x00, 0xFFFF)
-        await self._write_and_commit(command)
+        command = struct.pack(">HBBBH", 0x3105, 0xA0, 0x00, 0x01, 0x0000)
+        await self._write_and_commit(command, "turn controller on")
 
     async def turn_off_permanent(self) -> None:
         """Disable watering permanently."""
         command = struct.pack(">HBBBH", 0x3105, 0xC0, 0x00, 0x00, 0x0000)
-        await self._write_and_commit(command)
+        await self._write_and_commit(command, "turn controller off permanently")
 
     async def turn_off_x_days(self, days: int) -> None:
-        """Disable watering for X days."""
-        days = max(0, min(days, 365))
-        command = struct.pack(">HBBBH", 0x3105, 0x15, 0x00, days, 0xFFFF)
-        await self._write_and_commit(command)
+        """Disable watering for X days (device supports up to 15 days)."""
+        days = max(0, min(days, 15))
+        command = struct.pack(">HBBBH", 0x3105, 0xC0, 0x00, days, 0x0000)
+        await self._write_and_commit(command, f"turn controller off for {days} day(s)")
 
     async def sprinkle_station_x_for_y_minutes(self, station: int, minutes: int) -> None:
         """Manually water a station for Y minutes."""
         station = max(1, min(station, 16))
         minutes = max(1, min(minutes, 240))
-        command = struct.pack(">HBBBBH", 0x3105, 0x22, station, 0x00, minutes, 0xFFFF)
-        await self._write_and_commit(command)
+        seconds = minutes * 60
+        command = struct.pack(">HBBBH", 0x3105, 0x12, station, 0x00, seconds)
+        await self._write_and_commit(
+            command, f"sprinkle station {station} for {minutes} minute(s)"
+        )
 
     async def sprinkle_all_stations_for_y_minutes(self, minutes: int) -> None:
         """Manually water all stations for Y minutes each."""
         minutes = max(1, min(minutes, 240))
-        command = struct.pack(">HBBBH", 0x3105, 0x23, 0x00, minutes, 0xFFFF)
-        await self._write_and_commit(command)
+        seconds = minutes * 60
+        command = struct.pack(">HBBBH", 0x3105, 0x11, 0x00, 0x00, seconds)
+        await self._write_and_commit(
+            command, f"sprinkle all stations for {minutes} minute(s)"
+        )
 
     async def run_program_x(self, program: int) -> None:
         """Run a controller program by id (1-3 on most devices)."""
         program = max(1, min(program, 3))
-        command = struct.pack(">HBBBH", 0x3105, 0x21, program, 0x00, 0xFFFF)
-        await self._write_and_commit(command)
+        command = struct.pack(">HBBBH", 0x3105, 0x14, 0x00, program, 0x0000)
+        await self._write_and_commit(command, f"run program {program}")
 
     async def stop_manual_sprinkle(self) -> None:
         """Stop any running manual watering session."""
-        command = struct.pack(">HBBBH", 0x3105, 0x24, 0x00, 0x00, 0xFFFF)
-        await self._write_and_commit(command)
+        command = struct.pack(">HBBBH", 0x3105, 0x15, 0x00, 0xFF, 0x0000)
+        await self._write_and_commit(command, "stop manual sprinkle")
+
+    async def read_status(self) -> protocol.SolemStatus | None:
+        """Ask the device what it is doing and return its answer.
+
+        This sends only the status request (`0x3B 0x00`) - the same two bytes
+        the command path already writes as a commit, and that the MySolem app
+        sends on its own as a pure read. It changes nothing on the device, so
+        `commit=False`: committing a commit would be meaningless.
+
+        Returns None if the device answered but the reply carried no status
+        (never observed, but a firmware we haven't seen is free to do it).
+        """
+        frames = await self._write_and_commit(
+            protocol.STATUS_REQUEST,
+            "read status",
+            commit=False,
+            collect_seconds=STATUS_COLLECT_SECONDS,
+        )
+        # `_write_and_commit` has already decoded and logged this; decoding
+        # again keeps the return value honest even if a caller of the future
+        # bypasses `last_status`.
+        return protocol.decode_status(frames)
