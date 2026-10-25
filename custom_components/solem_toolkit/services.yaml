@@ -69,3 +69,10 @@ stop_manual_sprinkle:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+
+read_status:
+  description: "Ask the device for its current state (watering station, seconds left, battery level). Writes it to the log, fires a solem_toolkit_status event, and returns it as the service response. Changes nothing on the device."
+  fields:
+    device_mac:
+      description: "Device's MAC address"
+      example: "00:11:22:33:44:55"
