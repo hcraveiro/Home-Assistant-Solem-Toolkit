@@ -58,7 +58,7 @@ async def test_successful_connection_uses_single_attempt(api, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("error, expected", [
     (TimeoutError("late"), "Timeout connecting"),
-    (OSError("disconnected"), "Timeout connecting"),
+    (OSError("disconnected"), "Bluetooth transport error"),
     (RuntimeError("unexpected"), "Unexpected BLE connection"),
 ])
 async def test_connection_errors_become_api_errors(api, monkeypatch, error, expected):
