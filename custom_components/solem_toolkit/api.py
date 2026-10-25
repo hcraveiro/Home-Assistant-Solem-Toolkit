@@ -24,7 +24,6 @@ from homeassistant.core import HomeAssistant
 
 from . import protocol
 from .const import (
-    BLIND_WRITE_SETTLE_SECONDS,
     CHARACTERISTIC_UUID,
     COMMAND_ACK_TIMEOUT,
     COMMAND_MAX_ATTEMPTS,
@@ -77,9 +76,9 @@ class _NotifyCollector:
         # Runs in bleak's callback context: an exception here would surface as
         # an unrelated BLE error, or be swallowed, so nothing in it may fail.
         # Signal first, so a malformed payload can never cost us an ack.
-        self.event.set()
         try:
             self.frames.append(bytes(data))
+            self.event.set()
         except Exception:  # noqa: BLE001
             pass
 
@@ -194,11 +193,12 @@ class SolemAPI:
             raise APIConnectionError(
                 "Bluetooth adapter/proxy out of connection slots or device busy/unreachable"
             ) from exc
-        except (BleakDBusError, TimeoutError, OSError) as exc:
-            _LOGGER.warning(
-                "Solem %s - Timed out connecting to the device.", self.mac_address
-            )
+        except TimeoutError as exc:
+            _LOGGER.warning("Solem %s - Connection timeout.", self.mac_address)
             raise APIConnectionError("Timeout connecting to device") from exc
+        except (BleakDBusError, OSError) as exc:
+            _LOGGER.warning("Solem %s - Bluetooth transport error: %s", self.mac_address, exc)
+            raise APIConnectionError("Bluetooth transport error connecting to device") from exc
         except Exception as exc:  # noqa: BLE001
             _LOGGER.warning(
                 "Solem %s - Unexpected error while connecting: %s", self.mac_address, exc
@@ -280,28 +280,42 @@ class SolemAPI:
         client: BleakClient,
         collector: _NotifyCollector,
         collect_seconds: float = 0.0,
+        command: bytes = b"",
     ) -> None:
-        """Wait for the device reply subscribed to via `_subscribe_ack`.
-
-        Raises APIConnectionError if the ack does not arrive: commands are
-        written without a response, so the write "succeeding" only means the
-        adapter (or proxy) accepted the packet, not that the device got it.
-        A notification alone does not confirm the command: the caller validates
-        the decoded status before reporting success. Uncertain writes are never replayed.
-        """
+        """Wait for a valid matching status, using existing BLE notifications only."""
+        opcode = command[2] if len(command) >= 7 else None
+        station = command[3] if opcode == 0x12 else None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + COMMAND_ACK_TIMEOUT
+        last_status = None
         try:
-            await asyncio.wait_for(collector.event.wait(), timeout=COMMAND_ACK_TIMEOUT)
-            _LOGGER.debug(
-                "Solem %s - Device notification received; validating status.", self.mac_address)
-            if collect_seconds > 0:
-                # Only when the point of the connection was to read: the reply
-                # arrives in three chunks and the ack fires on the first.
-                await asyncio.sleep(collect_seconds)
-        except asyncio.TimeoutError as exc:
-            raise APIConnectionError(
-                f"No acknowledgement from the device within "
-                f"{COMMAND_ACK_TIMEOUT}s; command outcome is unknown"
-            ) from exc
+            while True:
+                status = protocol.decode_status(collector.frames)
+                if status is not None:
+                    last_status = status
+                    if (
+                        (station is None or (status.is_watering and status.active_station == station))
+                        and (opcode != 0x15 or not status.is_watering)
+                    ):
+                        if collect_seconds > 0:
+                            await asyncio.sleep(collect_seconds)
+                        return
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                collector.event.clear()
+                try:
+                    await asyncio.wait_for(collector.event.wait(), remaining)
+                except asyncio.TimeoutError:
+                    break
+
+            if last_status is None:
+                raise APIConnectionError("No valid controller status response; command outcome unknown")
+            if station is not None:
+                raise APIConnectionError("Controller did not report the requested watering station")
+            if opcode == 0x15:
+                raise APIConnectionError("Controller still reports watering after stop")
+            raise APIConnectionError("Controller status not confirmed; outcome unknown")
         finally:
             try:
                 await client.stop_notify(NOTIFY_CHARACTERISTIC_UUID)
@@ -340,26 +354,8 @@ class SolemAPI:
                 await self._write_with_auth_retry(client, command)
                 if commit:
                     await self._write_with_auth_retry(client, protocol.STATUS_REQUEST)
-                await self._await_ack(client, collector, collect_seconds)
+                await self._await_ack(client, collector, collect_seconds, command)
                 frames = list(collector.frames)
-                status = protocol.decode_status(frames)
-                if status is None:
-                    raise APIConnectionError(
-                        "No valid controller status response; command outcome unknown"
-                    )
-                # Commands with an observable station state must agree with the
-                # device's status, not merely produce an unrelated notification.
-                opcode = command[2] if len(command) >= 7 else None
-                if opcode == 0x12:
-                    requested_station = command[3]
-                    if not status.is_watering or status.active_station != requested_station:
-                        raise APIConnectionError(
-                            "Controller did not report the requested watering station"
-                        )
-                elif opcode == 0x15 and status.is_watering:
-                    raise APIConnectionError(
-                        "Controller still reports watering after stop"
-                    )
                 self._log_status(frames, description)
                 return frames
             except asyncio.CancelledError:
