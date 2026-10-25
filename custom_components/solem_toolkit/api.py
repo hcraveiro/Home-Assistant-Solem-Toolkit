@@ -18,7 +18,6 @@ from bleak_retry_connector import (
     BleakOutOfConnectionSlotsError,
     establish_connection,
 )
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from homeassistant.components import bluetooth
 from homeassistant.core import HomeAssistant
@@ -256,68 +255,30 @@ class SolemAPI:
             finally:
                 await self._disconnect_client(client)
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.4, min=0.4, max=2),
-        reraise=True,
-    )
     async def _write_with_auth_retry(self, client: BleakClient, payload: bytes) -> None:
-        """Write with a small retry loop (Solem can be picky right after connect).
-
-        `reraise=True` is required: without it, tenacity wraps the final failure
-        in its own RetryError instead of re-raising it, which would let the
-        error slip past the `except APIConnectionError` handling one level up.
-        """
+        """Write once: a transport error does not prove the device ignored the command."""
         if not client.is_connected:
             raise APIConnectionError("Client not connected")
-
         await client.write_gatt_char(self.characteristic_uuid, payload, response=False)
 
-    async def _subscribe_ack(self, client: BleakClient) -> _NotifyCollector | None:
-        """Subscribe to the notify characteristic BEFORE sending a command.
-
-        This must happen before the command is written: the device can reply
-        within milliseconds, and any notification sent before we subscribe is
-        lost forever (BLE does not queue notifications for late subscribers).
-
-        Returns the collector to wait on, or None if this device has no notify
-        characteristic at all (then the command can only be sent blindly).
-        Raises APIConnectionError if subscribing *times out*, which means the
-        link is not usable rather than the device not supporting notifications.
-        """
+    async def _subscribe_ack(self, client: BleakClient) -> _NotifyCollector:
+        """Require working notifications before sending a device-changing command."""
         collector = _NotifyCollector()
-
         try:
-            # Bounded: enabling notifications (a descriptor write) has been seen
-            # to hang for 15s+ on a flaky proxy connection, tying up the link
-            # long enough for the device to drop it before the real command
-            # is even sent.
             await asyncio.wait_for(
-                client.start_notify(
-                    NOTIFY_CHARACTERISTIC_UUID, collector.on_notify),
+                client.start_notify(NOTIFY_CHARACTERISTIC_UUID, collector.on_notify),
                 timeout=NOTIFY_SUBSCRIBE_TIMEOUT,
             )
-            return collector
-        except asyncio.TimeoutError as exc:
-            # The connection is open but nothing gets through it - seen when an
-            # ESPHome proxy runs a WiFi scan and starves the shared radio.
-            # Writing the command now would send it into the void while the
-            # service call reports success, so fail and let the caller retry.
+        except Exception as exc:
             raise APIConnectionError(
-                "Timed out enabling notifications; the link is open but not "
-                "usable"
+                "Cannot enable controller notifications; no command was sent"
             ) from exc
-        except Exception:  # noqa: BLE001
-            _LOGGER.debug(
-                "Solem %s - Notifications not available, skipping ack wait.",
-                self.mac_address,
-            )
-            return None
+        return collector
 
     async def _await_ack(
         self,
         client: BleakClient,
-        collector: _NotifyCollector | None,
+        collector: _NotifyCollector,
         collect_seconds: float = 0.0,
     ) -> None:
         """Wait for the device reply subscribed to via `_subscribe_ack`.
@@ -330,19 +291,6 @@ class SolemAPI:
         station kept watering (24/09/2026). Every command is an absolute
         setting, so the caller can safely retry.
         """
-        if collector is None:
-            # No notify characteristic: nothing can confirm anything. Give the
-            # queued packets time to actually go on air, because a write
-            # without response returns before transmission and disconnecting
-            # immediately can drop the command.
-            await asyncio.sleep(BLIND_WRITE_SETTLE_SECONDS)
-            _LOGGER.warning(
-                "Solem %s - Command sent without confirmation: this device "
-                "does not expose the notification characteristic.",
-                self.mac_address,
-            )
-            return
-
         try:
             await asyncio.wait_for(collector.event.wait(), timeout=COMMAND_ACK_TIMEOUT)
             _LOGGER.info(
@@ -354,7 +302,7 @@ class SolemAPI:
         except asyncio.TimeoutError as exc:
             raise APIConnectionError(
                 f"No acknowledgement from the device within "
-                f"{COMMAND_ACK_TIMEOUT}s; the command was not applied"
+                f"{COMMAND_ACK_TIMEOUT}s; command outcome is unknown"
             ) from exc
         finally:
             try:
@@ -370,98 +318,46 @@ class SolemAPI:
         commit: bool = True,
         collect_seconds: float = 0.0,
     ) -> list[bytes]:
-        """Write a command then commit it (Solem protocol).
-
-        Retries the whole connect-write-commit cycle on connection errors *and*
-        on a missing acknowledgement, since a single dropped/refused BLE
-        connection (common with ESPHome Bluetooth proxies) should not fail the
-        command outright. Only raises once every attempt has failed, so a
-        successful return means the device confirmed the command.
-
-        Returns the raw notification frames of the successful attempt. Callers
-        that only send commands can ignore them; `read_status()` is the one
-        that cares. `commit=False` skips the trailing 0x3B write for a command
-        that *is* the status request, and `collect_seconds` keeps the link open
-        long enough for a multi-chunk reply to finish arriving.
-        """
-        if self._device_lock.locked():
-            _LOGGER.info(
-                "Solem %s - Another command is already in progress, queuing '%s'...",
-                self.mac_address,
-                description,
-            )
-
+        """Retry connecting before a write, never replay an uncertain command."""
         async with self._device_lock:
             last_error: APIConnectionError | None = None
-            max_attempts = COMMAND_MAX_ATTEMPTS
-
-            for attempt in range(1, max_attempts + 1):
-                if attempt > 1:
-                    _LOGGER.warning(
-                        "Solem %s - Retrying command '%s' (attempt %s/%s) after: %s",
-                        self.mac_address,
-                        description,
-                        attempt,
-                        max_attempts,
-                        last_error,
-                    )
-                    # Give the adapter/proxy time to finish tearing down the
-                    # failed link before asking it for a new one.
-                    await asyncio.sleep(RETRY_BACKOFF_SECONDS)
-
+            client = None
+            for attempt in range(1, COMMAND_MAX_ATTEMPTS + 1):
                 try:
                     client = await self._connect_client()
+                    break
                 except APIConnectionError as exc:
                     last_error = exc
-                    continue
+                    if attempt < COMMAND_MAX_ATTEMPTS:
+                        await asyncio.sleep(RETRY_BACKOFF_SECONDS)
+            if client is None:
+                raise last_error or APIConnectionError("Unable to connect")
 
-                try:
-                    if not client.is_connected:
-                        raise APIConnectionError("Failed connecting!")
-
-                    # Subscribe before writing: the device can reply within
-                    # milliseconds, before we would otherwise be listening.
-                    collector = await self._subscribe_ack(client)
-
-                    _LOGGER.info(
-                        "Solem %s - Sending command: %s (payload=%s)",
-                        self.mac_address,
-                        description,
-                        command.hex(),
-                    )
-                    await self._write_with_auth_retry(client, command)
-
-                    if commit:
-                        _LOGGER.info(
-                            "Solem %s - Command sent, committing...", self.mac_address)
-                        await self._write_with_auth_retry(
-                            client, protocol.STATUS_REQUEST)
-
-                    await self._await_ack(client, collector, collect_seconds)
-
-                    frames = list(collector.frames) if collector else []
-                    self._log_status(frames, description)
-                    return frames
-                except APIConnectionError as exc:
-                    last_error = exc
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    # Any other BLE-layer failure (e.g. a write that fails after
-                    # the connection silently drops) must also go through our
-                    # retry/logging path instead of escaping uncaught.
-                    last_error = APIConnectionError(str(exc))
-                    continue
-                finally:
-                    await self._disconnect_client(client)
-
-            _LOGGER.error(
-                "Solem %s - Command '%s' failed after %s attempt(s): %s",
-                self.mac_address,
-                description,
-                max_attempts,
-                last_error,
-            )
-            raise last_error or APIConnectionError("Command failed")
+            try:
+                if not client.is_connected:
+                    raise APIConnectionError("Failed connecting!")
+                collector = await self._subscribe_ack(client)
+                # Once the first write is attempted, an error or missing reply
+                # leaves the physical outcome uncertain: never retry blindly.
+                await self._write_with_auth_retry(client, command)
+                if commit:
+                    await self._write_with_auth_retry(client, protocol.STATUS_REQUEST)
+                await self._await_ack(client, collector, collect_seconds)
+                frames = list(collector.frames)
+                if not frames:
+                    raise APIConnectionError("No controller response; outcome unknown")
+                self._log_status(frames, description)
+                return frames
+            except asyncio.CancelledError:
+                raise
+            except APIConnectionError:
+                raise
+            except Exception as exc:
+                raise APIConnectionError(
+                    f"Command '{description}' could not be confirmed; outcome unknown"
+                ) from exc
+            finally:
+                await self._disconnect_client(client)
 
     def _log_status(self, frames: list[bytes], description: str) -> None:
         """Decode the device reply and write it to the log.
