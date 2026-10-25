@@ -1,4 +1,5 @@
 """Validate the BLE response rather than treating any notification as success."""
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -85,3 +86,40 @@ async def test_stop_succeeds_after_idle_confirmation(setup_api, monkeypatch):
     attach_frames(setup_api, monkeypatch, [status_frame()])
     command = bytes.fromhex("31051500ff0000")
     await setup_api._write_and_commit(command, "stop")
+
+
+@pytest.mark.asyncio
+async def test_delayed_matching_status_succeeds_without_new_radio_requests(setup_api, monkeypatch):
+    """An initial stale status must not terminate a command before a newer reply."""
+    client = attach_frames(setup_api, monkeypatch, [status_frame()])
+    original = client.start_notify.side_effect
+
+    async def subscribe_with_later_status(uuid, callback):
+        await original(uuid, callback)
+        async def later():
+            await asyncio.sleep(0.002)
+            callback(0, bytearray(status_frame(watering=True, station=1)))
+        asyncio.create_task(later())
+
+    client.start_notify.side_effect = subscribe_with_later_status
+    command = bytes.fromhex("3105120100003c")
+    await setup_api._write_and_commit(command, "start station 1")
+    assert client.write_gatt_char.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_delayed_idle_status_confirms_stop(setup_api, monkeypatch):
+    """Stop must accept a later idle reading over an earlier watering one."""
+    client = attach_frames(setup_api, monkeypatch, [status_frame(watering=True, station=1)])
+    original = client.start_notify.side_effect
+
+    async def subscribe_with_later_status(uuid, callback):
+        await original(uuid, callback)
+        async def later():
+            await asyncio.sleep(0.002)
+            callback(0, bytearray(status_frame()))
+        asyncio.create_task(later())
+
+    client.start_notify.side_effect = subscribe_with_later_status
+    await setup_api._write_and_commit(bytes.fromhex("31051500ff0000"), "stop")
+    assert client.write_gatt_char.await_count == 2
