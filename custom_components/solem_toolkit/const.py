@@ -20,8 +20,8 @@ DEFAULT_BLUETOOTH_TIMEOUT = 15
 MIN_BLUETOOTH_TIMEOUT = 5
 
 # How long to wait for a device notification confirming a command was received.
-# Observed acks arrive in 0.2-0.8s, so a timeout here means the write never
-# reached the device rather than a slow device.
+# An expired response window leaves the outcome unknown; it does not prove
+# the command failed or was never received.
 COMMAND_ACK_TIMEOUT = 3
 
 # How long to wait for the notify subscription to be enabled. This is a
@@ -29,12 +29,6 @@ COMMAND_ACK_TIMEOUT = 3
 # impaired (a WiFi scan on an ESPHome proxy starving the shared radio does
 # exactly this) and the command must not be written blindly.
 NOTIFY_SUBSCRIBE_TIMEOUT = 5
-
-# Grace period before disconnecting when no acknowledgement is possible
-# (a device firmware without the notify characteristic). Commands are written
-# without a response, which returns as soon as the adapter/proxy has queued
-# the packet: disconnecting immediately can drop it before it goes on air.
-BLIND_WRITE_SETTLE_SECONDS = 2
 
 # How long to keep listening after the first reply when the point of the
 # connection is to *read* the device status. A status reply comes in three
