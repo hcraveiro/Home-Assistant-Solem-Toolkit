@@ -9,8 +9,5 @@
   "codeowners": [
     "@hcraveiro"
   ],
-  "requirements": [
-    "dbus_fast>=2.33.0",
-    "bleak>=0.22.3"
-  ]
+  "requirements": []
 }
