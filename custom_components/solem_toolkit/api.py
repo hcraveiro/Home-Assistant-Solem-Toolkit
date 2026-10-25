@@ -286,15 +286,13 @@ class SolemAPI:
         Raises APIConnectionError if the ack does not arrive: commands are
         written without a response, so the write "succeeding" only means the
         adapter (or proxy) accepted the packet, not that the device got it.
-        Without the ack there is no evidence the command was applied, and
-        reporting success anyway is how a Stop was logged as sent while the
-        station kept watering (24/09/2026). Every command is an absolute
-        setting, so the caller can safely retry.
+        A notification alone does not confirm the command: the caller validates
+        the decoded status before reporting success. Uncertain writes are never replayed.
         """
         try:
             await asyncio.wait_for(collector.event.wait(), timeout=COMMAND_ACK_TIMEOUT)
-            _LOGGER.info(
-                "Solem %s - Device acknowledged the command.", self.mac_address)
+            _LOGGER.debug(
+                "Solem %s - Device notification received; validating status.", self.mac_address)
             if collect_seconds > 0:
                 # Only when the point of the connection was to read: the reply
                 # arrives in three chunks and the ack fires on the first.
@@ -344,8 +342,24 @@ class SolemAPI:
                     await self._write_with_auth_retry(client, protocol.STATUS_REQUEST)
                 await self._await_ack(client, collector, collect_seconds)
                 frames = list(collector.frames)
-                if not frames:
-                    raise APIConnectionError("No controller response; outcome unknown")
+                status = protocol.decode_status(frames)
+                if status is None:
+                    raise APIConnectionError(
+                        "No valid controller status response; command outcome unknown"
+                    )
+                # Commands with an observable station state must agree with the
+                # device's status, not merely produce an unrelated notification.
+                opcode = command[2] if len(command) >= 7 else None
+                if opcode == 0x12:
+                    requested_station = command[3]
+                    if not status.is_watering or status.active_station != requested_station:
+                        raise APIConnectionError(
+                            "Controller did not report the requested watering station"
+                        )
+                elif opcode == 0x15 and status.is_watering:
+                    raise APIConnectionError(
+                        "Controller still reports watering after stop"
+                    )
                 self._log_status(frames, description)
                 return frames
             except asyncio.CancelledError:
