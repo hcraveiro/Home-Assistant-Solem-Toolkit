@@ -17,4 +17,4 @@ jobs:
       - run: python -m pip install -r requirements-test.txt
       - name: Reinstall dbus-fast without Cython extensions
         run: SKIP_CYTHON=1 python -m pip install --force-reinstall --no-deps --no-binary=dbus-fast dbus-fast==5.0.22
-      - run: python -m pytest -q --cov=custom_components.solem_toolkit.api --cov-report=term-missing
+      - run: python -m pytest -q --cov=custom_components.solem_toolkit.api --cov-report=term-missing --cov-fail-under=70
