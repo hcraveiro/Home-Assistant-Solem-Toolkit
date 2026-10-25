@@ -8,6 +8,7 @@ import pytest
 from custom_components.solem_toolkit.api import APIConnectionError, SolemAPI, _DEVICE_LOCKS
 
 MAC = "AA:BB:CC:DD:EE:FF"
+VALID_IDLE = bytes([0x32, 0x0B, 0x02, 0x40, 0, 0, 0, 0, 0, 0, 90, 0, 0])
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def api(monkeypatch):
     return instance
 
 
-def client_with_notification(frames=(b"valid",)):
+def client_with_notification(frames=(VALID_IDLE,)):
     client = SimpleNamespace(is_connected=True)
     client.write_gatt_char = AsyncMock()
     client.disconnect = AsyncMock()
