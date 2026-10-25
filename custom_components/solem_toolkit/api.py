@@ -310,6 +310,8 @@ class SolemAPI:
                     break
 
             if last_status is None:
+                if not collector.frames:
+                    raise APIConnectionError("No acknowledgement; command outcome is unknown")
                 raise APIConnectionError("No valid controller status response; command outcome unknown")
             if station is not None:
                 raise APIConnectionError("Controller did not report the requested watering station")
