@@ -73,3 +73,36 @@ The captured commands were documented in [legacy issue #19](https://github.com/h
 Mocked tests are not a substitute for physical-device validation. Use a
 connectable BLE adapter/proxy, test when temporary watering interruption is
 acceptable, and do not equate command acknowledgement with verified state.
+
+### BLNR experimental read-only queries
+
+Firmware interpretation remains unverified. All three operations return the raw
+BLE response as `response_hex`, with a `valid_frame` flag. Do not interpret
+the raw `0xf8` payload as a battery percentage or controller state yet.
+
+```yaml
+action: solem_toolkit.read_info_block
+data:
+  device_mac: "AA:BB:CC:DD:EE:FF"
+  model: blnr
+  index: 1
+```
+
+```yaml
+action: solem_toolkit.read_station_config
+data:
+  device_mac: "AA:BB:CC:DD:EE:FF"
+  model: blnr
+  index: 2
+```
+
+```yaml
+action: solem_toolkit.read_status
+data:
+  device_mac: "AA:BB:CC:DD:EE:FF"
+  model: blnr
+```
+
+For BL-IP, `read_status` preserves its existing decoded response and event.
+BLNR status intentionally does not fire a BL-IP-shaped status event.
+All BLNR read requests are sent **without** a control COMMIT.
