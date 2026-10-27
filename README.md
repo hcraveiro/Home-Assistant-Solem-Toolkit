@@ -24,7 +24,7 @@ Then you can restart Home Assistant and the services from Solem Toolkit will be 
 
 ## Services
 
-There is no configuration, you only need to use the provided services. They are self-explanatory:
+There is no configuration beyond the toolkit setup. Specify the controller MAC address in each service call. Unless otherwise indicated, irrigation control services support BL-IP; the BL-NR subset is documented below:
 * list_characteristics - List the services and its characteristics
 * turn_off_permanent - Turn off the Sprinkler permanently
 * turn_off_x_days - Turn off the Sprinkler for X days
@@ -47,7 +47,7 @@ No, as this is 'just' a toolkit you need to provide it to every service. I plan 
 
 A big thank you to [pcman75](https://github.com/pcman75) for doing a [reverse engineering](https://github.com/pcman75/solem-blip-reverse-engineering) on Solem controllers which helped me a lot. 
 
-## Experimental BLNR support
+## Partial BL-NR support (hardware validated)
 
 All existing services remain unchanged. They now accept two **optional** fields:
 
@@ -71,11 +71,11 @@ scheduled irrigation for one day. Other BLNR operations such as manual watering,
 
 BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
 The captured commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
-Mocked tests are not a substitute for physical-device validation. Use a
+These five BL-NR operations have been tested on one physical controller, but other firmware variants remain unverified. Use a
 connectable BLE adapter/proxy, test when temporary watering interruption is
 acceptable, and do not equate command acknowledgement with verified state.
 
-### BLNR experimental read-only queries
+### BL-NR experimental read-only queries
 
 Firmware interpretation remains unverified. All three operations return the raw
 BLE response as `response_hex`, with a `valid_frame` flag and a raw
