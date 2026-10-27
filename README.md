@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/hcraveiro/Home-Assistant-Solem-Toolkit.svg)](https://github.com/hcraveiro/Home-Assistant-Solem-Toolkit/releases/)
 
-Integrate Solem Bluetooth watering controllers into Home Assistant. BL-IP has established command support; BL-NR enable and one-day disable have been validated on real hardware, with experimental read-only diagnostics. 
+Integrate Solem Bluetooth watering controllers into Home Assistant. BL-IP has established command support; BL-NR supports manual watering, Stop, temporary and permanent suspension, re-enable, and raw read-only diagnostics. Control operations and the three read services have been validated on physical BL-NR hardware. 
 
 - [Home Assistant Solem Toolkit Integration](#home-assistant-solem-toolkit-integration)
     - [Installation](#installation)
@@ -47,12 +47,12 @@ No, as this is 'just' a toolkit you need to provide it to every service. I plan 
 
 A big thank you to [pcman75](https://github.com/pcman75) for doing a [reverse engineering](https://github.com/pcman75/solem-blip-reverse-engineering) on Solem controllers which helped me a lot. 
 
-## Partial BL-NR support (hardware validated)
+## BL-NR support (hardware validated)
 
 All existing services remain unchanged. They now accept two **optional** fields:
 
 - `model`: defaults to `bl_ip` when omitted, preserving existing automations.
-  Use `bl_nr` to select the experimental BLNR transport.
+  Use `bl_nr` to select the separate BLNR transport.
 - `version`: optional firmware/model version string. Currently informational;
   specifying it never changes protocol behavior.
 
@@ -65,7 +65,7 @@ data:
   model: bl_nr
 ```
 
-BL-NR supports these additional experimental operations:
+BL-NR supports these additional operations:
 
 | Service | Parameters | Hardware evidence |
 | --- | --- | --- |
@@ -94,7 +94,12 @@ For a suspension, use `solem_toolkit.turn_off_x_days` with configurable `days`.
 For indefinite suspension, use `solem_toolkit.turn_off_permanent`; re-enable with
 `solem_toolkit.turn_on`. Zero days are reserved for indefinite suspension in the
 protocol and remain rejected by `turn_off_x_days`.
-Validate inferred values against the app and physical controller before relying on them.
+The V1.0.5b1 hardware tests confirmed temporary/permanent suspension, re-enable,
+manual watering, Stop, and all three read services (`valid_frame: true`).
+The watering duration is sent to the controller; the controller manages its own
+countdown and automatic shutoff. Durations of 1, 2 and 20 minutes and suspension
+periods of 1 and 10 days have app capture evidence. Other parameter values and
+firmware variants have not been individually tested.
 
 BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
 The original commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
