@@ -4,6 +4,18 @@ list_characteristics:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
 
 turn_off_permanent:
   description: "Turn off the sprinkler permanently"
@@ -11,13 +23,37 @@ turn_off_permanent:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
 
 turn_off_x_days:
-  description: "Turn off sprinkler for X days"
+  description: "Turn off sprinkler for X days (BLNR experimental: only 1 day verified)"
   fields:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
     days:
       description: "Number of days the sprinkler should be off"
       example: "1"
@@ -28,6 +64,18 @@ turn_on:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
 
 sprinkle_station_x_for_y_minutes:
   description: "Sprinkle on station X for Y minutes"
@@ -35,6 +83,18 @@ sprinkle_station_x_for_y_minutes:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
     station:
       description: "Station id that should be running"
       example: "1"
@@ -49,6 +109,18 @@ sprinkle_all_stations_for_y_minutes:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
     minutes:
       description: "Number of minutes the sprinkler on all the stations should be running"
       example: "1"
@@ -59,6 +131,18 @@ run_program_x:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
     program:
       description: "Program id that should be running"
       example: "1"
@@ -69,6 +153,18 @@ stop_manual_sprinkle:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
 
 read_status:
   description: "Ask the device for its current state (watering station, seconds left, battery level). Writes it to the log, fires a solem_toolkit_status event, and returns it as the service response. Changes nothing on the device."
@@ -76,20 +172,15 @@ read_status:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
-
-# Experimental BLNR-only controls. They do not start or stop manual watering.
-blnr_turn_on:
-  description: "Experimental BLNR: enable controller (does not start watering)."
-  fields:
-    device_mac:
-      required: true
-      description: "BLNR controller Bluetooth MAC address"
-      example: "00:11:22:33:44:55"
-
-blnr_turn_off_one_day:
-  description: "Experimental BLNR: disable controller for one day (may suppress scheduled watering)."
-  fields:
-    device_mac:
-      required: true
-      description: "BLNR controller Bluetooth MAC address"
-      example: "00:11:22:33:44:55"
+    model:
+      description: "Optional device model (bl_ip by default; blnr experimental)."
+      example: "bl_ip"
+      default: "bl_ip"
+      selector:
+        select:
+          options:
+            - "bl_ip"
+            - "blnr"
+    version:
+      description: "Optional firmware or model version (informational only)."
+      example: "5.1.7"
