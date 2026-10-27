@@ -1,7 +1,7 @@
 {
   "domain": "solem_toolkit",
   "name": "Solem Toolkit",
-  "version": "1.0.4b2",
+  "version": "1.0.4b3",
   "documentation": "https://github.com/hcraveiro/Home-Assistant-Solem-Toolkit",
   "dependencies": [
     "bluetooth_adapters"
