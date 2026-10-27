@@ -29,10 +29,47 @@ def _get_timeout(call: ServiceCall) -> int:
     return max(MIN_BLUETOOTH_TIMEOUT, timeout_int)
 
 
+SUPPORTED_MODELS = ("bl_ip", "blnr")
+BLNR_ACTIONS = {"turn_on", "turn_off_x_days", "list_characteristics"}
+
+
+def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
+    """Select the protocol by model, while retaining the legacy BL-IP default."""
+    model = call.data.get("model", "bl_ip")
+    version = call.data.get("version")
+    if not isinstance(model, str) or model not in SUPPORTED_MODELS:
+        raise HomeAssistantError(
+            f"Unsupported model {model!r}; expected one of {SUPPORTED_MODELS}"
+        )
+    if version is not None and (
+        not isinstance(version, str) or not version.strip() or len(version) > 64
+    ):
+        raise HomeAssistantError("version must be a non-empty string (max 64 characters)")
+    if model == "blnr":
+        if action not in BLNR_ACTIONS:
+            raise HomeAssistantError(
+                f"BLNR does not yet support {action}; only turn_on and "
+                "turn_off_x_days(days=1) are experimentally implemented"
+            )
+        if action == "turn_off_x_days" and call.data.get("days", 1) != 1:
+            raise HomeAssistantError(
+                "BLNR supports only one-day disable; other durations are unverified"
+            )
+        _LOGGER.info(
+            "Experimental BLNR protocol selected (version=%s)", version or "unspecified"
+        )
+        return BLNRAPI(
+            hass, call.data.get("device_mac"), bluetooth_timeout=_get_timeout(call)
+        )
+    return SolemAPI(
+        hass, call.data.get("device_mac"), bluetooth_timeout=_get_timeout(call)
+    )
+
+
 async def async_list_characteristics(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
     _LOGGER.info("Solem %s - Service call: list_characteristics", device_mac)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "list_characteristics")
     try:
         result = await api.list_characteristics()
         # Log output so the user can read it from HA logs.
@@ -48,7 +85,7 @@ async def async_list_characteristics(hass: HomeAssistant, call: ServiceCall) -> 
 async def async_turn_off_permanent(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
     _LOGGER.info("Solem %s - Service call: turn_off_permanent", device_mac)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "turn_off_permanent")
     try:
         await api.turn_off_permanent()
     except APIConnectionError as exc:
@@ -60,9 +97,12 @@ async def async_turn_off_x_days(hass: HomeAssistant, call: ServiceCall) -> None:
     days = int(call.data.get("days", 1))
     _LOGGER.info(
         "Solem %s - Service call: turn_off_x_days (days=%s)", device_mac, days)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "turn_off_x_days")
     try:
-        await api.turn_off_x_days(days)
+        if isinstance(api, BLNRAPI):
+            await api.turn_off_one_day()
+        else:
+            await api.turn_off_x_days(days)
     except APIConnectionError as exc:
         raise HomeAssistantError(str(exc)) from exc
 
@@ -70,7 +110,7 @@ async def async_turn_off_x_days(hass: HomeAssistant, call: ServiceCall) -> None:
 async def async_turn_on(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
     _LOGGER.info("Solem %s - Service call: turn_on", device_mac)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "turn_on")
     try:
         await api.turn_on()
     except APIConnectionError as exc:
@@ -87,7 +127,7 @@ async def async_sprinkle_station_x_for_y_minutes(hass: HomeAssistant, call: Serv
         station,
         minutes,
     )
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "sprinkle_station_x_for_y_minutes")
     try:
         await api.sprinkle_station_x_for_y_minutes(station, minutes)
     except APIConnectionError as exc:
@@ -102,7 +142,7 @@ async def async_sprinkle_all_stations_for_y_minutes(hass: HomeAssistant, call: S
         device_mac,
         minutes,
     )
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "sprinkle_all_stations_for_y_minutes")
     try:
         await api.sprinkle_all_stations_for_y_minutes(minutes)
     except APIConnectionError as exc:
@@ -114,7 +154,7 @@ async def async_run_program_x(hass: HomeAssistant, call: ServiceCall) -> None:
     program = int(call.data.get("program", 1))
     _LOGGER.info(
         "Solem %s - Service call: run_program_x (program=%s)", device_mac, program)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "run_program_x")
     try:
         await api.run_program_x(program)
     except APIConnectionError as exc:
@@ -124,7 +164,7 @@ async def async_run_program_x(hass: HomeAssistant, call: ServiceCall) -> None:
 async def async_stop_manual_sprinkle(hass: HomeAssistant, call: ServiceCall) -> None:
     device_mac = call.data.get("device_mac")
     _LOGGER.info("Solem %s - Service call: stop_manual_sprinkle", device_mac)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "stop_manual_sprinkle")
     try:
         await api.stop_manual_sprinkle()
     except APIConnectionError as exc:
@@ -147,7 +187,7 @@ async def async_read_status(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     """
     device_mac = call.data.get("device_mac")
     _LOGGER.info("Solem %s - Service call: read_status", device_mac)
-    api = SolemAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    api = _get_api(hass, call, "read_status")
     try:
         status = await api.read_status()
     except APIConnectionError as exc:
@@ -168,28 +208,7 @@ async def async_read_status(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     return data
 
 
-async def async_blnr_control(hass: HomeAssistant, call: ServiceCall, *, enable: bool) -> None:
-    """Execute one of the two captured BLNR commands (experimental)."""
-    device_mac = call.data.get("device_mac")
-    if not isinstance(device_mac, str) or not device_mac.strip():
-        raise HomeAssistantError("device_mac is required")
-    api = BLNRAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
-    try:
-        if enable:
-            await api.turn_on()
-        else:
-            await api.turn_off_one_day()
-    except APIConnectionError as exc:
-        raise HomeAssistantError(str(exc)) from exc
-
-
 def async_setup_services(hass: HomeAssistant) -> None:
-    async def _handle_blnr_on(call: ServiceCall) -> None:
-        await async_blnr_control(hass, call, enable=True)
-
-    async def _handle_blnr_off_one_day(call: ServiceCall) -> None:
-        await async_blnr_control(hass, call, enable=False)
-
     async def _handle_list_characteristics(call: ServiceCall) -> None:
         await async_list_characteristics(hass, call)
 
@@ -217,10 +236,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _handle_read_status(call: ServiceCall) -> ServiceResponse:
         return await async_read_status(hass, call)
 
-    hass.services.async_register(DOMAIN, "blnr_turn_on", _handle_blnr_on)
-    hass.services.async_register(
-        DOMAIN, "blnr_turn_off_one_day", _handle_blnr_off_one_day
-    )
     hass.services.async_register(
         DOMAIN, "list_characteristics", _handle_list_characteristics)
     hass.services.async_register(
