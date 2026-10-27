@@ -48,8 +48,9 @@ def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
     if model == "bl_nr":
         if action not in BLNR_ACTIONS:
             raise HomeAssistantError(
-                f"BLNR does not yet support {action}; only turn_on and "
-                "turn_off_x_days(days=1) are experimentally implemented"
+                f"BL-NR does not support {action}; available actions are "
+                "turn_on, turn_off_x_days(days=1), list_characteristics, "
+                "read_status, read_info_block and read_station_config"
             )
         if action == "turn_off_x_days" and int(call.data.get("days", 1)) != 1:
             raise HomeAssistantError(
@@ -216,9 +217,9 @@ async def _async_blnr_indexed_read(
     """Return raw BLNR read response pending hardware decoding."""
     api = _get_api(hass, call, action)
     if not isinstance(api, BLNRAPI):
-        raise HomeAssistantError(f"{action} is available only for model blnr")
+        raise HomeAssistantError(f"{action} is available only for model bl_nr")
     try:
-        index = int(call.data.get("index", 1))
+        index = int(call.data.get("index", 2 if opcode == 0x09 else 1))
     except (ValueError, TypeError) as exc:
         raise HomeAssistantError("index must be an integer from 0 to 255") from exc
     if not 0 <= index <= 255:
