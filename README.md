@@ -43,3 +43,26 @@ No, as this is 'just' a toolkit you need to provide it to every service. I plan 
 ## Credits
 
 A big thank you to [pcman75](https://github.com/pcman75) for doing a [reverse engineering](https://github.com/pcman75/solem-blip-reverse-engineering) on Solem controllers which helped me a lot. 
+
+## Experimental BLNR support
+
+Solem **BLNR** uses a separate BLE protocol and is **not** interchangeable with
+the standard BL-IP services. A preliminary implementation provides only:
+
+- `solem_toolkit.blnr_turn_on` — enable the controller (does **not** start watering).
+- `solem_toolkit.blnr_turn_off_one_day` — disable the controller for one day.
+  **Warning:** this can prevent scheduled irrigation during that period.
+
+Both services take `device_mac`. They require a connectable Home Assistant Bluetooth
+adapter or active BLE proxy. They are intentionally **not** used by Smart Water
+Controller's BL-IP irrigation Start/Stop commands. Neither manual station watering,
+program execution, nor a general-purpose BLNR Stop command has been reverse-engineered.
+
+The command bytes, proprietary GATT UUIDs and commit were taken from the hardware
+capture supplied in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
+Unit tests mock BLE transactions; **physical behavior and response validation must
+still be checked on a BLNR controller** before calling the device supported.
+
+Test carefully in a controlled period when watering interruption is acceptable.
+Missing/invalid replies are reported as an *unknown outcome*; the Toolkit never
+automatically replays these commands.
