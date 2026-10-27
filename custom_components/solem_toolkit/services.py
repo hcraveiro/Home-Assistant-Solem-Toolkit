@@ -51,7 +51,7 @@ def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
                 f"BLNR does not yet support {action}; only turn_on and "
                 "turn_off_x_days(days=1) are experimentally implemented"
             )
-        if action == "turn_off_x_days" and call.data.get("days", 1) != 1:
+        if action == "turn_off_x_days" and int(call.data.get("days", 1)) != 1:
             raise HomeAssistantError(
                 "BLNR supports only one-day disable; other durations are unverified"
             )
