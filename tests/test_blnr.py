@@ -200,7 +200,7 @@ def test_physical_read_frames_reject_corrupted_checksum_and_length(opcode, reply
 
 def test_control_ack_still_requires_zero_terminator():
     assert is_valid_blnr_frame(reply(0x06), 0x06)
-    assert not is_valid_blnr_frame(reply(0x06)[:-1] + b"\\x02", 0x06)
+    assert not is_valid_blnr_frame(reply(0x06)[:-1] + bytes((2,)), 0x06)
 
 
 @pytest.mark.asyncio
