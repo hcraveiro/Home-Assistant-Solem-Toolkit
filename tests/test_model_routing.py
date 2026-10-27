@@ -44,7 +44,6 @@ def test_blnr_model_routes_to_separate_api():
     "sprinkle_station_x_for_y_minutes",
     "sprinkle_all_stations_for_y_minutes",
     "run_program_x",
-    "read_status",
     "turn_off_permanent",
 ])
 def test_unverified_blnr_commands_are_rejected(action):
@@ -86,3 +85,22 @@ async def test_existing_one_day_disable_routes_to_blnr(monkeypatch):
     monkeypatch.setattr(BLNRAPI, "turn_off_one_day", sent)
     await async_turn_off_x_days(SimpleNamespace(), call(model="blnr", days=1))
     sent.assert_awaited_once()
+
+
+def test_blnr_read_actions_are_allowed():
+    for action in ("read_status", "read_info_block", "read_station_config"):
+        assert isinstance(
+            _get_api(SimpleNamespace(), call(model="blnr"), action),
+            BLNRAPI,
+        )
+
+
+@pytest.mark.asyncio
+async def test_blnr_status_uses_raw_query(monkeypatch):
+    from custom_components.solem_toolkit.services import async_read_status
+
+    read = AsyncMock(return_value={"response_hex": "f80300000000"})
+    monkeypatch.setattr(BLNRAPI, "read_raw", read)
+    result = await async_read_status(SimpleNamespace(), call(model="blnr"))
+    assert result["response_hex"] == "f80300000000"
+    read.assert_awaited_once_with(0xF7)
