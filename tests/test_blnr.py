@@ -108,11 +108,6 @@ async def test_unrelated_notification_does_not_confirm_command(setup_api, monkey
 
 
 
-
-import pytest
-
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("opcode,index,expected,reply_opcode", [
     (0x01, 1, "010100010300", 0x02),
@@ -173,3 +168,63 @@ async def test_invalid_queries_never_connect(setup_api, opcode, index):
     with pytest.raises(ValueError):
         await api.read_raw(opcode, index)
     client.write_gatt_char.assert_not_awaited()
+
+
+# Frames captured from a physical BL-NR during the 1.0.4b2 beta.
+REAL_READ_REPLIES = (
+    (0x02, "020f01424c4e522d44334637303100000000c202", "02"),
+    (0x0A, "0a0c0253746174696f6e20310000004b03", "03"),
+    (0xF8, "f80300000000fb00", "00"),
+)
+
+
+@pytest.mark.parametrize("opcode,reply_hex,trailer", REAL_READ_REPLIES)
+def test_physical_blnr_read_frames_validate(opcode, reply_hex, trailer):
+    frame = bytes.fromhex(reply_hex)
+    assert len(frame) == frame[1] + 5
+    assert frame[-2] == sum(frame[:-2]) & 0xFF
+    assert frame[-1:].hex() == trailer
+    assert is_valid_blnr_frame(frame, opcode)
+
+
+@pytest.mark.parametrize("opcode,reply_hex,_trailer", REAL_READ_REPLIES)
+def test_physical_read_frames_reject_corrupted_checksum_and_length(opcode, reply_hex, _trailer):
+    frame = bytes.fromhex(reply_hex)
+    bad_checksum = frame[:-2] + bytes((frame[-2] ^ 1, frame[-1]))
+    assert not is_valid_blnr_frame(bad_checksum, opcode)
+    bad_length = bytearray(frame)
+    bad_length[1] += 1
+    assert not is_valid_blnr_frame(bad_length, opcode)
+    assert not is_valid_blnr_frame(frame, opcode ^ 1)
+
+
+def test_control_ack_still_requires_zero_terminator():
+    assert is_valid_blnr_frame(reply(0x06), 0x06)
+    assert not is_valid_blnr_frame(reply(0x06)[:-1] + bytes((2,)), 0x06)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_opcode,index,reply_opcode,reply_hex,_trailer", [
+    (0x01, 1, *REAL_READ_REPLIES[0]),
+    (0x09, 2, *REAL_READ_REPLIES[1]),
+    (0xF7, None, *REAL_READ_REPLIES[2]),
+])
+async def test_real_captured_reply_is_accepted_end_to_end(
+    setup_api, request_opcode, index, reply_opcode, reply_hex, _trailer
+):
+    api, client = setup_api
+
+    async def write(_uuid, _payload, response):
+        assert response is False
+        callback = client.start_notify.call_args.args[1]
+        callback(0, bytearray.fromhex(reply_hex))
+
+    client.write_gatt_char.side_effect = write
+    result = await api.read_raw(request_opcode, index)
+    assert result["response_opcode"] == f"0x{reply_opcode:02x}"
+    assert result["response_hex"] == reply_hex
+    assert result["valid_frame"] is True
+    assert result["trailer_hex"] == _trailer
+    assert client.write_gatt_char.await_count == 1
+    client.stop_notify.assert_awaited_once()
+    client.disconnect.assert_awaited_once()

@@ -22,11 +22,18 @@ BLNR_REPLY_TIMEOUT = 4.0
 
 
 def is_valid_blnr_frame(frame: bytes, opcode: int) -> bool:
-    """Validate opcode, declared payload length, checksum and terminator."""
-    if len(frame) < 5 or frame[0] != opcode or frame[-1] != 0:
+    """Validate the reply length and checksum without assuming a zero read trailer.
+
+    Hardware-captured indexed replies (0x02/0x0A) end in non-zero bytes.
+    Their last-byte semantics are not yet established. Control and status
+    frames retain the observed zero-terminator requirement.
+    """
+    if len(frame) < 5 or frame[0] != opcode:
         return False
     payload_length = frame[1]
     if len(frame) != payload_length + 5:
+        return False
+    if opcode not in (0x02, 0x0A) and frame[-1] != 0:
         return False
     return (sum(frame[:-2]) & 0xFF) == frame[-2]
 
@@ -157,6 +164,7 @@ class BLNRAPI(SolemAPI):
                                 "index": index,
                                 "request_hex": request.hex(),
                                 "response_hex": frame.hex(),
+                                "trailer_hex": f"{frame[-1]:02x}",
                                 "valid_frame": valid,
                             }
                     remaining = deadline - loop.time()
