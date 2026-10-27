@@ -36,7 +36,7 @@ def test_explicit_bl_ip_still_uses_legacy_protocol():
 
 
 def test_blnr_model_routes_to_separate_api():
-    assert type(_get_api(SimpleNamespace(), call(model="blnr", version="1"), "turn_on")) is BLNRAPI
+    assert type(_get_api(SimpleNamespace(), call(model="bl_nr", version="1"), "turn_on")) is BLNRAPI
 
 
 @pytest.mark.parametrize("action", [
@@ -48,19 +48,19 @@ def test_blnr_model_routes_to_separate_api():
 ])
 def test_unverified_blnr_commands_are_rejected(action):
     with pytest.raises(HomeAssistantError, match="does not yet support"):
-        _get_api(SimpleNamespace(), call(model="blnr"), action)
+        _get_api(SimpleNamespace(), call(model="bl_nr"), action)
 
 
 @pytest.mark.parametrize("days", [0, 2, 15, "3"])
 def test_blnr_rejects_unverified_off_durations(days):
     with pytest.raises(HomeAssistantError, match="only one-day"):
-        _get_api(SimpleNamespace(), call(model="blnr", days=days), "turn_off_x_days")
+        _get_api(SimpleNamespace(), call(model="bl_nr", days=days), "turn_off_x_days")
 
 
 def test_blnr_accepts_one_day_integer_or_string():
     for days in (1, "1"):
         assert isinstance(
-            _get_api(SimpleNamespace(), call(model="blnr", days=days), "turn_off_x_days"),
+            _get_api(SimpleNamespace(), call(model="bl_nr", days=days), "turn_off_x_days"),
             BLNRAPI,
         )
 
@@ -75,7 +75,7 @@ def test_unknown_models_do_not_fall_back_silently(model):
 async def test_existing_turn_on_routes_to_blnr(monkeypatch):
     sent = AsyncMock()
     monkeypatch.setattr(BLNRAPI, "turn_on", sent)
-    await async_turn_on(SimpleNamespace(), call(model="blnr"))
+    await async_turn_on(SimpleNamespace(), call(model="bl_nr"))
     sent.assert_awaited_once()
 
 
@@ -83,14 +83,14 @@ async def test_existing_turn_on_routes_to_blnr(monkeypatch):
 async def test_existing_one_day_disable_routes_to_blnr(monkeypatch):
     sent = AsyncMock()
     monkeypatch.setattr(BLNRAPI, "turn_off_one_day", sent)
-    await async_turn_off_x_days(SimpleNamespace(), call(model="blnr", days=1))
+    await async_turn_off_x_days(SimpleNamespace(), call(model="bl_nr", days=1))
     sent.assert_awaited_once()
 
 
 def test_blnr_read_actions_are_allowed():
     for action in ("read_status", "read_info_block", "read_station_config"):
         assert isinstance(
-            _get_api(SimpleNamespace(), call(model="blnr"), action),
+            _get_api(SimpleNamespace(), call(model="bl_nr"), action),
             BLNRAPI,
         )
 
@@ -101,6 +101,6 @@ async def test_blnr_status_uses_raw_query(monkeypatch):
 
     read = AsyncMock(return_value={"response_hex": "f80300000000"})
     monkeypatch.setattr(BLNRAPI, "read_raw", read)
-    result = await async_read_status(SimpleNamespace(), call(model="blnr"))
+    result = await async_read_status(SimpleNamespace(), call(model="bl_nr"))
     assert result["response_hex"] == "f80300000000"
     read.assert_awaited_once_with(0xF7)
