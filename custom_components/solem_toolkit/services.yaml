@@ -18,7 +18,7 @@ list_characteristics:
       example: "5.1.7"
 
 turn_off_permanent:
-  description: "Turn off the sprinkler permanently"
+  description: "Disable scheduled irrigation indefinitely (BL-IP and experimental BLNR). Use turn_on to re-enable."
   fields:
     device_mac:
       description: "Device's MAC address"
@@ -37,7 +37,7 @@ turn_off_permanent:
       example: "5.1.7"
 
 turn_off_x_days:
-  description: "Turn off sprinkler for X days (BLNR experimental: only 1 day verified)"
+  description: "Turn off sprinkler for X days (BLNR experimental: 1-255 days; 1 and 10 days captured)"
   fields:
     device_mac:
       description: "Device's MAC address"
@@ -78,7 +78,7 @@ turn_on:
       example: "5.1.7"
 
 sprinkle_station_x_for_y_minutes:
-  description: "Sprinkle on station X for Y minutes"
+  description: "Sprinkle on station X for Y minutes. BLNR experimental: station 1, 1-255 minutes; 1, 2 and 20 minutes captured."
   fields:
     device_mac:
       description: "Device's MAC address"
@@ -148,7 +148,7 @@ run_program_x:
       example: "1"
 
 stop_manual_sprinkle:
-  description: "Stop manual sprinkle"
+  description: "Stop manual sprinkle (BL-IP and experimental BLNR)."
   fields:
     device_mac:
       description: "Device's MAC address"
@@ -238,3 +238,4 @@ read_station_config:
     bluetooth_timeout:
       description: "Bluetooth connection timeout in seconds."
       default: 10
+

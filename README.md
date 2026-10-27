@@ -65,24 +65,67 @@ data:
   model: bl_nr
 ```
 
-`solem_toolkit.turn_off_x_days` supports `model: bl_nr` only with
-`days: 1`, based on a captured physical command. This can suppress
-scheduled irrigation for one day. Other BLNR operations such as manual watering, Stop, permanent disable and program execution remain unsupported. Read-only information, station configuration and raw status queries are available experimentally.
+BL-NR supports these additional experimental operations:
+
+| Service | Parameters | Hardware evidence |
+| --- | --- | --- |
+| `turn_off_permanent` | No day count | App capture confirms indefinite disable with A0 00, followed by re-enable |
+| `turn_off_x_days` | `days: 1..255` | App captures confirm 1 and 10 days; other values use the same parameter field |
+| `sprinkle_station_x_for_y_minutes` | `station: 1`, `minutes: 1..255` | App captures confirm 1, 2 and 20 minutes; other values use the same duration field |
+| `stop_manual_sprinkle` | No duration | App capture confirms stop about 11 seconds after start |
+
+The 255 limit is a conservative encoding bound, not a verified device limit.
+Higher duration bytes and other station IDs are not enabled without captures.
+All-station watering and explicit program execution are BL-IP-only services;
+the single-station BL-NR app does not expose these operations.
+Read-only information, station configuration and raw status queries remain available.
+
+```yaml
+action: solem_toolkit.sprinkle_station_x_for_y_minutes
+data:
+  device_mac: "AA:BB:CC:DD:EE:FF"
+  model: bl_nr
+  station: 1
+  minutes: 2
+```
+
+Use `solem_toolkit.stop_manual_sprinkle` with the same MAC and model to stop.
+For a suspension, use `solem_toolkit.turn_off_x_days` with configurable `days`.
+For indefinite suspension, use `solem_toolkit.turn_off_permanent`; re-enable with
+`solem_toolkit.turn_on`. Zero days are reserved for indefinite suspension in the
+protocol and remain rejected by `turn_off_x_days`.
+Validate inferred values against the app and physical controller before relying on them.
 
 BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
-The captured commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
-These five BL-NR operations have been tested on one physical controller, but other firmware variants remain unverified. Use a
-connectable BLE adapter/proxy, test when temporary watering interruption is
-acceptable, and do not equate command acknowledgement with verified state.
+The original commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
+A new app HCI capture on 2026-10-27 confirms these frames:
+
+| Action | Command | Control reply | Commit reply |
+| --- | --- | --- | --- |
+| Water one minute | `0504000a0001001400` | `06060242240001600fe400` | `0e060042240001600fea00` |
+| Water two minutes | `0504000a0002001500` | `06060242240002600ee400` | `0e060042240002600eea00` |
+| Water twenty minutes | `0504000a0014002700` | `06060242240014600ef600` | `0e060042240014600efc00` |
+| Suspend ten days | `050400a00a0000b300` | `0606022000a001600e3d01` | `0e06002000a001600e4301` |
+| Disable permanently | `050400a0000000a900` | `06060220000001600d9c00` | `0e060020000001600da200` |
+| Enable controller | `050400c0000000c900` | `06060240000001600ebd00` | `0e060040000001600ec300` |
+| Stop manual watering | `050400900000009900` | `060602400000016010bf00` | `0e060040000001600fc400` |
+
+Manual operations await a valid control reply before sending `0d00000d00`,
+then await a valid commit reply, matching the captured app sequence.
+No control command is replayed automatically after a write, including on timeout.
+An acknowledgement is not independent proof of physical watering state.
+Other firmware variants remain unverified. Bluetooth connections stay on demand.
 
 ### BL-NR experimental read-only queries
 
 Firmware interpretation remains unverified. All three operations return the raw
-BLE response as `response_hex`, with a `valid_frame` flag and a raw
-`trailer_hex`. Physical BL-NR captures demonstrate that info (`0x02`) and
-station (`0x0A`) replies can end in non-zero trailer bytes (`0x02` and `0x03`),
-while status (`0xF8`) ends in `0x00`. The checksum and declared payload length
-validate on all three captures; the semantics of the trailer remain unknown.
+BLE response as `response_hex`, with a `valid_frame` flag and `checksum_hex`.
+The last two bytes are the **16-bit little-endian sum of all preceding bytes**.
+This is confirmed across read, control and commit replies: the ten-day control
+reply ends in `3d01` (sum `0x013d`), and its commit reply ends in `4301`.
+Both checksum bytes and the declared length are validated for every reply.
+`trailer_hex` is retained for compatibility and contains the high checksum byte;
+it is not a terminator or an independent trailer.
 Do not interpret
 the raw `0xf8` payload as a battery percentage or controller state yet.
 
@@ -132,15 +175,16 @@ SOLEM's [official BL-NR product page](https://solem-irrigation.com/produit/bl-nr
 documents a single station, 9V battery, MySOLEM control and Eco Mode.
 [Installation guidance](https://manuals.plus/solem/bl-nr-bluetooth-watering-controller-manual)
 also describes pairing, programming and manual operation in the app,
-but does not disclose the underlying BLE opcodes. No BL-NR manual
-watering or stopping packets have been independently captured yet.
+but does not disclose the underlying BLE opcodes. Manual watering and stopping
+frames are now documented from the app capture above.
 
 Other protocol findings in the original capture:
 
 - `0x03` writes the controller date/time; it is not implemented because
   the write layout is not fully established.
-- `0x05` with `0xA0` and a one-day parameter has been physically
-  verified; other values (multi-day disable) remain **unconfirmed**.
+- `0x05` with `0xA0` has capture evidence for 1 and 10 days.
+  The other supported day values still need hardware validation.
 - `0x0D` commits control commands. Read-only queries **do not** send a commit.
 - Read status `0xF8` is not decoded into battery voltage/percentage,
   watering state, or station activity without matching real measurements.
+

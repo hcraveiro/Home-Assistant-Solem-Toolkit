@@ -40,20 +40,17 @@ def test_blnr_model_routes_to_separate_api():
 
 
 @pytest.mark.parametrize("action", [
-    "stop_manual_sprinkle",
-    "sprinkle_station_x_for_y_minutes",
     "sprinkle_all_stations_for_y_minutes",
     "run_program_x",
-    "turn_off_permanent",
 ])
 def test_unverified_blnr_commands_are_rejected(action):
     with pytest.raises(HomeAssistantError, match="does not support"):
         _get_api(SimpleNamespace(), call(model="bl_nr"), action)
 
 
-@pytest.mark.parametrize("days", [0, 2, 15, "3"])
+@pytest.mark.parametrize("days", [0, 256, -1, "bad", 1.5, True])
 def test_blnr_rejects_unverified_off_durations(days):
-    with pytest.raises(HomeAssistantError, match="only one-day"):
+    with pytest.raises(HomeAssistantError, match="BLNR days"):
         _get_api(SimpleNamespace(), call(model="bl_nr", days=days), "turn_off_x_days")
 
 
@@ -82,9 +79,9 @@ async def test_existing_turn_on_routes_to_blnr(monkeypatch):
 @pytest.mark.asyncio
 async def test_existing_one_day_disable_routes_to_blnr(monkeypatch):
     sent = AsyncMock()
-    monkeypatch.setattr(BLNRAPI, "turn_off_one_day", sent)
-    await async_turn_off_x_days(SimpleNamespace(), call(model="bl_nr", days=1))
-    sent.assert_awaited_once()
+    monkeypatch.setattr(BLNRAPI, "turn_off_x_days", sent)
+    await async_turn_off_x_days(SimpleNamespace(), call(model="bl_nr", days=10))
+    sent.assert_awaited_once_with(10)
 
 
 def test_blnr_read_actions_are_allowed():
@@ -166,3 +163,46 @@ async def test_blnr_only_read_rejects_bl_ip_without_sending_command(
             SimpleNamespace(), call(), opcode, action
         )
     read.assert_not_awaited()
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minutes", [1, 2, 10, 255])
+async def test_blnr_manual_service_routes_configurable_duration(monkeypatch, minutes):
+    from custom_components.solem_toolkit.services import async_sprinkle_station_x_for_y_minutes
+
+    sent = AsyncMock()
+    monkeypatch.setattr(BLNRAPI, "sprinkle_station_x_for_y_minutes", sent)
+    await async_sprinkle_station_x_for_y_minutes(
+        SimpleNamespace(), call(model="bl_nr", station=1, minutes=str(minutes))
+    )
+    sent.assert_awaited_once_with(1, minutes)
+
+
+@pytest.mark.parametrize("fields", [
+    {"minutes": 0}, {"minutes": 256}, {"minutes": 1.5},
+    {"minutes": True}, {"station": 2}, {"station": "bad"},
+])
+def test_blnr_invalid_manual_parameters_rejected_before_transport(fields):
+    with pytest.raises(HomeAssistantError, match="BLNR"):
+        _get_api(SimpleNamespace(), call(model="bl_nr", **fields), "sprinkle_station_x_for_y_minutes")
+
+
+@pytest.mark.asyncio
+async def test_blnr_stop_service_routes_to_blnr(monkeypatch):
+    from custom_components.solem_toolkit.services import async_stop_manual_sprinkle
+
+    sent = AsyncMock()
+    monkeypatch.setattr(BLNRAPI, "stop_manual_sprinkle", sent)
+    await async_stop_manual_sprinkle(SimpleNamespace(), call(model="bl_nr"))
+    sent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_blnr_permanent_disable_routes_to_blnr(monkeypatch):
+    from custom_components.solem_toolkit.services import async_turn_off_permanent
+
+    sent = AsyncMock()
+    monkeypatch.setattr(BLNRAPI, "turn_off_permanent", sent)
+    await async_turn_off_permanent(SimpleNamespace(), call(model="bl_nr"))
+    sent.assert_awaited_once()

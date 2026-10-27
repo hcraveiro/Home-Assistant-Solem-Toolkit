@@ -30,7 +30,7 @@ def _get_timeout(call: ServiceCall) -> int:
 
 
 SUPPORTED_MODELS = ("bl_ip", "bl_nr")
-BLNR_ACTIONS = {"turn_on", "turn_off_x_days", "list_characteristics", "read_status", "read_info_block", "read_station_config"}
+BLNR_ACTIONS = {"turn_off_permanent", "sprinkle_station_x_for_y_minutes", "stop_manual_sprinkle", "turn_on", "turn_off_x_days", "list_characteristics", "read_status", "read_info_block", "read_station_config"}
 
 
 def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
@@ -49,13 +49,21 @@ def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
         if action not in BLNR_ACTIONS:
             raise HomeAssistantError(
                 f"BL-NR does not support {action}; available actions are "
-                "turn_on, turn_off_x_days(days=1), list_characteristics, "
-                "read_status, read_info_block and read_station_config"
+                "turn_on, turn_off_permanent, turn_off_x_days(days=1..255), list_characteristics, "
+                "read_status, read_info_block, read_station_config, "
+                "sprinkle_station_x_for_y_minutes and stop_manual_sprinkle"
             )
-        if action == "turn_off_x_days" and int(call.data.get("days", 1)) != 1:
-            raise HomeAssistantError(
-                "BLNR supports only one-day disable; other durations are unverified"
-            )
+        fields = {
+            "turn_off_x_days": ("days",),
+            "sprinkle_station_x_for_y_minutes": ("station", "minutes"),
+        }.get(action, ())
+        for field in fields:
+            value = call.data.get(field, 1)
+            if not (type(value) is int or isinstance(value, str) and value.isascii() and value.isdecimal()):
+                raise HomeAssistantError(f"BLNR {field} must be an integer")
+            maximum = 1 if field == "station" else 255
+            if not 1 <= int(value) <= maximum:
+                raise HomeAssistantError(f"BLNR {field} must be between 1 and {maximum}")
         _LOGGER.info(
             "Experimental BLNR protocol selected (version=%s)", version or "unspecified"
         )
@@ -100,10 +108,7 @@ async def async_turn_off_x_days(hass: HomeAssistant, call: ServiceCall) -> None:
         "Solem %s - Service call: turn_off_x_days (days=%s)", device_mac, days)
     api = _get_api(hass, call, "turn_off_x_days")
     try:
-        if isinstance(api, BLNRAPI):
-            await api.turn_off_one_day()
-        else:
-            await api.turn_off_x_days(days)
+        await api.turn_off_x_days(days)
     except APIConnectionError as exc:
         raise HomeAssistantError(str(exc)) from exc
 
@@ -295,3 +300,4 @@ def async_setup_services(hass: HomeAssistant) -> None:
         _handle_read_status,
         supports_response=SupportsResponse.OPTIONAL,
     )
+

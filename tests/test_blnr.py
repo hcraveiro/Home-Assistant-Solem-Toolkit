@@ -198,7 +198,7 @@ def test_physical_read_frames_reject_corrupted_checksum_and_length(opcode, reply
     assert not is_valid_blnr_frame(frame, opcode ^ 1)
 
 
-def test_control_ack_still_requires_zero_terminator():
+def test_control_ack_rejects_incorrect_high_checksum_byte():
     assert is_valid_blnr_frame(reply(0x06), 0x06)
     assert not is_valid_blnr_frame(reply(0x06)[:-1] + bytes((2,)), 0x06)
 
@@ -228,3 +228,154 @@ async def test_real_captured_reply_is_accepted_end_to_end(
     assert client.write_gatt_char.await_count == 1
     client.stop_notify.assert_awaited_once()
     client.disconnect.assert_awaited_once()
+
+
+
+# Sanitized app HCI capture, 2026-10-27: start one minute, stop 10.947 s later.
+MANUAL_CAPTURE = (
+    ("start", "0504000a0001001400", "06060242240001600fe400", "0e060042240001600fea00"),
+    ("stop", "050400900000009900", "060602400000016010bf00", "0e060040000001600fc400"),
+    ("start2", "0504000a0002001500", "06060242240002600ee400", "0e060042240002600eea00"),
+    ("start20", "0504000a0014002700", "06060242240014600ef600", "0e060042240014600efc00"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,command_hex,ack_hex,commit_hex", MANUAL_CAPTURE)
+async def test_manual_commands_match_real_capture(setup_api, action, command_hex, ack_hex, commit_hex):
+    api, client = setup_api
+
+    async def write(uuid, payload, response):
+        assert uuid == BLNR_WRITE_UUID
+        assert response is False
+        callback = client.start_notify.call_args.args[1]
+        callback(0, bytearray.fromhex(commit_hex if payload == BLNR_COMMIT else ack_hex))
+
+    client.write_gatt_char.side_effect = write
+    if action.startswith("start"):
+        minutes = {"start": 1, "start2": 2, "start20": 20}[action]
+        await api.sprinkle_station_x_for_y_minutes(1, minutes)
+    else:
+        await api.stop_manual_sprinkle()
+    assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command_hex, BLNR_COMMIT.hex()]
+    client.stop_notify.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minutes,expected", [(2, "0504000a0002001500"), (10, "0504000a000a001d00"), (255, "0504000a00ff001201")])
+async def test_configurable_duration_encoding_is_experimental(setup_api, minutes, expected):
+    api, _client = setup_api
+    api._send_blnr_command = AsyncMock()
+    await api.sprinkle_station_x_for_y_minutes(1, minutes)
+    assert api._send_blnr_command.await_args.args[0].hex() == expected
+    assert api._send_blnr_command.await_args.kwargs["verify_commit"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days,expected", [(1, "050400a0010000aa00"), (10, "050400a00a0000b300"), (255, "050400a0ff0000a801")])
+async def test_configurable_disable_days_encoding(setup_api, days, expected):
+    api, _client = setup_api
+    api._send_blnr_command = AsyncMock()
+    await api.turn_off_x_days(days)
+    assert api._send_blnr_command.await_args.args[0].hex() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,args", [
+    ("sprinkle_station_x_for_y_minutes", (2, 1)),
+    ("sprinkle_station_x_for_y_minutes", (1, 0)),
+    ("sprinkle_station_x_for_y_minutes", (1, 256)),
+    ("sprinkle_station_x_for_y_minutes", (1, 1.5)),
+    ("turn_off_x_days", (0,)), ("turn_off_x_days", (256,)),
+])
+async def test_invalid_parameters_never_connect(setup_api, method, args):
+    api, client = setup_api
+    with pytest.raises(APIConnectionError):
+        await getattr(api, method)(*args)
+    api._connect_client.assert_not_awaited()
+    client.write_gatt_char.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_control", "missing_commit", "bad_control", "bad_commit", "write_failed"])
+@pytest.mark.parametrize("operation", ["manual", "permanent"])
+async def test_manual_failure_is_never_replayed(setup_api, monkeypatch, failure, operation):
+    api, client = setup_api
+    monkeypatch.setattr("custom_components.solem_toolkit.blnr.BLNR_REPLY_TIMEOUT", 0.01)
+
+    async def write(_uuid, payload, response):
+        if failure == "write_failed":
+            raise OSError("lost transport")
+        commit = payload == BLNR_COMMIT
+        if failure == ("missing_commit" if commit else "missing_control"):
+            return
+        callback = client.start_notify.call_args.args[1]
+        frame = bytes.fromhex(MANUAL_CAPTURE[0][3 if commit else 2])
+        if failure == ("bad_commit" if commit else "bad_control"):
+            frame = frame[:-2] + bytes((frame[-2] ^ 1, 0))
+        callback(0, bytearray(frame))
+
+    client.write_gatt_char.side_effect = write
+    with pytest.raises(APIConnectionError, match="outcome unknown"):
+        if operation == "manual":
+            await api.sprinkle_station_x_for_y_minutes(1, 1)
+        else:
+            await api.turn_off_permanent()
+    assert client.write_gatt_char.await_count == (2 if failure in ("missing_commit", "bad_commit") else 1)
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.parametrize("frame_hex", [
+    "0606022000a001600e3d01", "0e06002000a001600e4301",
+    "020f01424c4e522d44334637303100000000c202",
+    "0a0c0253746174696f6e20310000004b03",
+])
+def test_real_capture_validates_both_checksum_bytes(frame_hex):
+    frame = bytes.fromhex(frame_hex)
+    assert is_valid_blnr_frame(frame, frame[0])
+    corrupted_high = frame[:-1] + bytes((frame[-1] ^ 1,))
+    assert not is_valid_blnr_frame(corrupted_high, frame[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days,command,ack,commit", [
+    (10, "050400a00a0000b300", "0606022000a001600e3d01", "0e06002000a001600e4301"),
+    (None, "050400c0000000c900", "06060240000001600ebd00", "0e060040000001600ec300"),
+])
+async def test_captured_ten_day_suspend_and_enable(setup_api, days, command, ack, commit):
+    api, client = setup_api
+
+    async def write(_uuid, payload, response):
+        callback = client.start_notify.call_args.args[1]
+        callback(0, bytearray.fromhex(commit if payload == BLNR_COMMIT else ack))
+
+    client.write_gatt_char.side_effect = write
+    if days is None:
+        await api.turn_on()
+    else:
+        await api.turn_off_x_days(days)
+    assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command, BLNR_COMMIT.hex()]
+
+
+@pytest.mark.asyncio
+async def test_captured_permanent_disable_and_reenable(setup_api):
+    api, client = setup_api
+    captures = [
+        ("turn_off_permanent", "050400a0000000a900", "06060220000001600d9c00", "0e060020000001600da200"),
+        ("turn_on", "050400c0000000c900", "06060240000001600dbc00", "0e060040000001600dc200"),
+    ]
+    for method, command, ack, commit in captures:
+        client.write_gatt_char.reset_mock()
+
+        async def write(_uuid, payload, response):
+            assert response is False
+            callback = client.start_notify.call_args.args[1]
+            frame = bytes.fromhex(commit if payload == BLNR_COMMIT else ack)
+            assert is_valid_blnr_frame(frame, frame[0])
+            callback(0, bytearray(frame))
+
+        client.write_gatt_char.side_effect = write
+        await getattr(api, method)()
+        assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command, BLNR_COMMIT.hex()]
+    assert client.disconnect.await_count == 2
