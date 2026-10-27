@@ -1,0 +1,107 @@
+"""Experimental BLNR BLE regression tests; hardware validation is still required."""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from custom_components.solem_toolkit.api import APIConnectionError
+from custom_components.solem_toolkit.blnr import (
+    BLNRAPI,
+    BLNR_COMMIT,
+    BLNR_OFF_ONE_DAY,
+    BLNR_ON,
+    BLNR_NOTIFY_UUID,
+    BLNR_WRITE_UUID,
+    is_valid_blnr_frame,
+)
+
+
+def reply(opcode):
+    """Generate a minimal valid BLNR reply for mocked transport."""
+    start = bytes((opcode, 0, 0))
+    return start + bytes((sum(start) & 0xFF, 0))
+
+
+def test_captured_blnr_control_frames_and_checksum():
+    assert BLNR_ON.hex() == "050400c0000000c900"
+    assert BLNR_OFF_ONE_DAY.hex() == "050400a0010000aa00"
+    assert BLNR_COMMIT.hex() == "0d00000d00"
+    assert all(is_valid_blnr_frame(frame, frame[0]) for frame in
+               (BLNR_ON, BLNR_OFF_ONE_DAY, BLNR_COMMIT))
+    assert is_valid_blnr_frame(reply(0x06), 0x06)
+    assert not is_valid_blnr_frame(b"\x06\x00\x00\xff\x00", 0x06)
+    assert not is_valid_blnr_frame(reply(0x07), 0x06)
+
+
+@pytest.fixture
+def setup_api(monkeypatch):
+    api = BLNRAPI(SimpleNamespace(), "AA:BB:CC:DD:EE:FF")
+    client = SimpleNamespace(
+        is_connected=True,
+        start_notify=AsyncMock(),
+        write_gatt_char=AsyncMock(),
+        stop_notify=AsyncMock(),
+        disconnect=AsyncMock(),
+    )
+    monkeypatch.setattr(api, "_connect_client", AsyncMock(return_value=client))
+    return api, client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,expected", [
+    ("turn_on", BLNR_ON),
+    ("turn_off_one_day", BLNR_OFF_ONE_DAY),
+])
+async def test_blnr_commands_are_isolated_and_acknowledged(setup_api, method, expected):
+    api, client = setup_api
+
+    async def write(uuid, payload, response):
+        assert uuid == BLNR_WRITE_UUID
+        assert response is False
+        if payload == BLNR_COMMIT:
+            notify = client.start_notify.call_args.args[1]
+            notify(0, bytearray(reply(0x06)))
+
+    client.write_gatt_char.side_effect = write
+    await getattr(api, method)()
+    assert client.start_notify.call_args.args[0] == BLNR_NOTIFY_UUID
+    assert [c.args[1] for c in client.write_gatt_char.await_args_list] == [
+        expected, BLNR_COMMIT,
+    ]
+    client.stop_notify.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_subscription_failure_sends_no_command(setup_api):
+    api, client = setup_api
+    client.start_notify.side_effect = OSError("no subscription")
+    with pytest.raises(APIConnectionError, match="nothing sent"):
+        await api.turn_on()
+    client.write_gatt_char.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_write_is_never_replayed(setup_api):
+    api, client = setup_api
+    client.write_gatt_char.side_effect = OSError("transport lost")
+    with pytest.raises(APIConnectionError, match="outcome unknown"):
+        await api.turn_on()
+    assert client.write_gatt_char.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unrelated_notification_does_not_confirm_command(setup_api, monkeypatch):
+    api, client = setup_api
+    monkeypatch.setattr(
+        "custom_components.solem_toolkit.blnr.BLNR_REPLY_TIMEOUT", 0.01
+    )
+
+    async def start_notify(_uuid, callback):
+        callback(0, bytearray(reply(0x02)))
+
+    client.start_notify.side_effect = start_notify
+    with pytest.raises(APIConnectionError, match="acknowledgement missing"):
+        await api.turn_on()
+    assert client.write_gatt_char.await_count == 2
