@@ -104,3 +104,65 @@ async def test_blnr_status_uses_raw_query(monkeypatch):
     result = await async_read_status(SimpleNamespace(), call(model="bl_nr"))
     assert result["response_hex"] == "f80300000000"
     read.assert_awaited_once_with(0xF7)
+
+
+@pytest.mark.parametrize("legacy_name", ["blnr", "blip"])
+def test_legacy_model_spelling_is_rejected_explicitly(legacy_name):
+    with pytest.raises(HomeAssistantError, match="Unsupported model"):
+        _get_api(SimpleNamespace(), call(model=legacy_name), "turn_on")
+
+
+@pytest.mark.asyncio
+async def test_legacy_read_status_without_model_keeps_bl_ip_response(monkeypatch):
+    from custom_components.solem_toolkit import services
+
+    raw_status = object()
+    read = AsyncMock(return_value=raw_status)
+    monkeypatch.setattr(SolemAPI, "read_status", read)
+    monkeypatch.setattr(
+        services.protocol,
+        "as_event_data",
+        lambda status: {"state": "idle"} if status is raw_status else {},
+    )
+
+    result = await services.async_read_status(SimpleNamespace(), call())
+    assert result == {"state": "idle", "device_mac": MAC}
+    read.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opcode,action,default_index", [
+    (0x01, "read_info_block", 1),
+    (0x09, "read_station_config", 2),
+])
+async def test_blnr_indexed_read_default_matches_service_ui(
+    monkeypatch, opcode, action, default_index
+):
+    from custom_components.solem_toolkit.services import _async_blnr_indexed_read
+
+    read = AsyncMock(return_value={"valid_frame": True})
+    monkeypatch.setattr(BLNRAPI, "read_raw", read)
+    result = await _async_blnr_indexed_read(
+        SimpleNamespace(), call(model="bl_nr"), opcode, action
+    )
+    assert result == {"valid_frame": True}
+    read.assert_awaited_once_with(opcode, default_index)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opcode,action", [
+    (0x01, "read_info_block"),
+    (0x09, "read_station_config"),
+])
+async def test_blnr_only_read_rejects_bl_ip_without_sending_command(
+    monkeypatch, opcode, action
+):
+    from custom_components.solem_toolkit.services import _async_blnr_indexed_read
+
+    read = AsyncMock()
+    monkeypatch.setattr(BLNRAPI, "read_raw", read)
+    with pytest.raises(HomeAssistantError, match="only for model bl_nr"):
+        await _async_blnr_indexed_read(
+            SimpleNamespace(), call(), opcode, action
+        )
+    read.assert_not_awaited()
