@@ -228,3 +228,92 @@ async def test_real_captured_reply_is_accepted_end_to_end(
     assert client.write_gatt_char.await_count == 1
     client.stop_notify.assert_awaited_once()
     client.disconnect.assert_awaited_once()
+
+
+
+# Sanitized app HCI capture, 2026-10-27: start one minute, stop 10.947 s later.
+MANUAL_CAPTURE = (
+    ("start", "0504000a0001001400", "06060242240001600fe400", "0e060042240001600fea00"),
+    ("stop", "050400900000009900", "060602400000016010bf00", "0e060040000001600fc400"),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,command_hex,ack_hex,commit_hex", MANUAL_CAPTURE)
+async def test_manual_commands_match_real_capture(setup_api, action, command_hex, ack_hex, commit_hex):
+    api, client = setup_api
+
+    async def write(uuid, payload, response):
+        assert uuid == BLNR_WRITE_UUID
+        assert response is False
+        callback = client.start_notify.call_args.args[1]
+        callback(0, bytearray.fromhex(commit_hex if payload == BLNR_COMMIT else ack_hex))
+
+    client.write_gatt_char.side_effect = write
+    if action == "start":
+        await api.sprinkle_station_x_for_y_minutes(1, 1)
+    else:
+        await api.stop_manual_sprinkle()
+    assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command_hex, BLNR_COMMIT.hex()]
+    client.stop_notify.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minutes,expected", [(2, "0504000a0002001500"), (10, "0504000a000a001d00"), (255, "0504000a00ff001200")])
+async def test_configurable_duration_encoding_is_experimental(setup_api, minutes, expected):
+    api, _client = setup_api
+    api._send_blnr_command = AsyncMock()
+    await api.sprinkle_station_x_for_y_minutes(1, minutes)
+    assert api._send_blnr_command.await_args.args[0].hex() == expected
+    assert api._send_blnr_command.await_args.kwargs["verify_commit"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days,expected", [(1, "050400a0010000aa00"), (10, "050400a00a0000b300"), (255, "050400a0ff0000a800")])
+async def test_configurable_disable_days_encoding(setup_api, days, expected):
+    api, _client = setup_api
+    api._send_blnr_command = AsyncMock()
+    await api.turn_off_x_days(days)
+    assert api._send_blnr_command.await_args.args[0].hex() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,args", [
+    ("sprinkle_station_x_for_y_minutes", (2, 1)),
+    ("sprinkle_station_x_for_y_minutes", (1, 0)),
+    ("sprinkle_station_x_for_y_minutes", (1, 256)),
+    ("sprinkle_station_x_for_y_minutes", (1, 1.5)),
+    ("turn_off_x_days", (0,)), ("turn_off_x_days", (256,)),
+])
+async def test_invalid_parameters_never_connect(setup_api, method, args):
+    api, client = setup_api
+    with pytest.raises(APIConnectionError):
+        await getattr(api, method)(*args)
+    api._connect_client.assert_not_awaited()
+    client.write_gatt_char.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_control", "missing_commit", "bad_control", "bad_commit", "write_failed"])
+async def test_manual_failure_is_never_replayed(setup_api, monkeypatch, failure):
+    api, client = setup_api
+    monkeypatch.setattr("custom_components.solem_toolkit.blnr.BLNR_REPLY_TIMEOUT", 0.01)
+
+    async def write(_uuid, payload, response):
+        if failure == "write_failed":
+            raise OSError("lost transport")
+        commit = payload == BLNR_COMMIT
+        if failure == ("missing_commit" if commit else "missing_control"):
+            return
+        callback = client.start_notify.call_args.args[1]
+        frame = bytes.fromhex(MANUAL_CAPTURE[0][3 if commit else 2])
+        if failure == ("bad_commit" if commit else "bad_control"):
+            frame = frame[:-2] + bytes((frame[-2] ^ 1, 0))
+        callback(0, bytearray(frame))
+
+    client.write_gatt_char.side_effect = write
+    with pytest.raises(APIConnectionError, match="outcome unknown"):
+        await api.sprinkle_station_x_for_y_minutes(1, 1)
+    assert client.write_gatt_char.await_count == (2 if failure in ("missing_commit", "bad_commit") else 1)
+    client.disconnect.assert_awaited_once()

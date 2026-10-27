@@ -65,15 +65,46 @@ data:
   model: bl_nr
 ```
 
-`solem_toolkit.turn_off_x_days` supports `model: bl_nr` only with
-`days: 1`, based on a captured physical command. This can suppress
-scheduled irrigation for one day. Other BLNR operations such as manual watering, Stop, permanent disable and program execution remain unsupported. Read-only information, station configuration and raw status queries are available experimentally.
+BL-NR supports these additional experimental operations:
+
+| Service | Parameters | Hardware evidence |
+| --- | --- | --- |
+| `turn_off_x_days` | `days: 1..255` | One day physically verified; other day values inferred from the parameter byte |
+| `sprinkle_station_x_for_y_minutes` | `station: 1`, `minutes: 1..255` | App capture confirms one minute; other durations use the inferred duration byte |
+| `stop_manual_sprinkle` | No duration | App capture confirms stop about 11 seconds after start |
+
+The 255 limit is a conservative encoding bound, not a verified device limit.
+Higher duration bytes and other station IDs are not enabled without captures.
+Permanent disable, all-station watering and program execution remain unsupported.
+Read-only information, station configuration and raw status queries remain available.
+
+```yaml
+action: solem_toolkit.sprinkle_station_x_for_y_minutes
+data:
+  device_mac: "AA:BB:CC:DD:EE:FF"
+  model: bl_nr
+  station: 1
+  minutes: 2
+```
+
+Use `solem_toolkit.stop_manual_sprinkle` with the same MAC and model to stop.
+For a suspension, use `solem_toolkit.turn_off_x_days` with configurable `days`.
+Validate inferred values against the app and physical controller before relying on them.
 
 BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
-The captured commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
-These five BL-NR operations have been tested on one physical controller, but other firmware variants remain unverified. Use a
-connectable BLE adapter/proxy, test when temporary watering interruption is
-acceptable, and do not equate command acknowledgement with verified state.
+The original commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
+A new app HCI capture on 2026-10-27 confirms these frames:
+
+| Action | Command | Control reply | Commit reply |
+| --- | --- | --- | --- |
+| Water one minute | `0504000a0001001400` | `06060242240001600fe400` | `0e060042240001600fea00` |
+| Stop manual watering | `050400900000009900` | `060602400000016010bf00` | `0e060040000001600fc400` |
+
+Manual operations await a valid control reply before sending `0d00000d00`,
+then await a valid commit reply, matching the captured app sequence.
+No control command is replayed automatically after a write, including on timeout.
+An acknowledgement is not independent proof of physical watering state.
+Other firmware variants remain unverified. Bluetooth connections stay on demand.
 
 ### BL-NR experimental read-only queries
 
@@ -132,8 +163,8 @@ SOLEM's [official BL-NR product page](https://solem-irrigation.com/produit/bl-nr
 documents a single station, 9V battery, MySOLEM control and Eco Mode.
 [Installation guidance](https://manuals.plus/solem/bl-nr-bluetooth-watering-controller-manual)
 also describes pairing, programming and manual operation in the app,
-but does not disclose the underlying BLE opcodes. No BL-NR manual
-watering or stopping packets have been independently captured yet.
+but does not disclose the underlying BLE opcodes. Manual watering and stopping
+frames are now documented from the app capture above.
 
 Other protocol findings in the original capture:
 
@@ -144,3 +175,4 @@ Other protocol findings in the original capture:
 - `0x0D` commits control commands. Read-only queries **do not** send a commit.
 - Read status `0xF8` is not decoded into battery voltage/percentage,
   watering state, or station activity without matching real measurements.
+

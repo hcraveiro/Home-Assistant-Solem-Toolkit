@@ -18,7 +18,20 @@ BLNR_NOTIFY_UUID = "a3eb0003-8c8c-b87a-827d-9bf3de08084a"
 BLNR_COMMIT = bytes.fromhex("0d00000d00")
 BLNR_ON = bytes.fromhex("050400c0000000c900")
 BLNR_OFF_ONE_DAY = bytes.fromhex("050400a0010000aa00")
+BLNR_STOP_MANUAL = bytes.fromhex("050400900000009900")
 BLNR_REPLY_TIMEOUT = 4.0
+
+
+def _control_frame(mode: int, parameter: int) -> bytes:
+    """Build a control frame with the existing 8-bit checksum and zero trailer."""
+    prefix = bytes((0x05, 0x04, 0x00, mode, parameter, 0x00, 0x00))
+    return prefix + bytes((sum(prefix) & 0xFF, 0x00))
+
+
+def _validate_parameter(value: int, name: str) -> None:
+    """Keep inferred parameter values within a single byte pending captures."""
+    if type(value) is not int or not 1 <= value <= 255:
+        raise APIConnectionError(f"BLNR {name} must be an integer from 1 to 255")
 
 
 def is_valid_blnr_frame(frame: bytes, opcode: int) -> bool:
@@ -41,7 +54,9 @@ def is_valid_blnr_frame(frame: bytes, opcode: int) -> bool:
 class BLNRAPI(SolemAPI):
     """Experimental BLNR protocol; never use standard BL-IP services."""
 
-    async def _send_blnr_command(self, command: bytes, label: str) -> None:
+    async def _send_blnr_command(
+        self, command: bytes, label: str, *, verify_commit: bool = False
+    ) -> None:
         async with self._device_lock:
             client = await self._connect_client()
             notifications: list[bytes] = []
@@ -64,32 +79,37 @@ class BLNRAPI(SolemAPI):
                 # No command retry: after a BLE write its physical outcome
                 # could be uncertain even when the connection disappears.
                 command_sent = True
-                await client.write_gatt_char(BLNR_WRITE_UUID, command, response=False)
-                await client.write_gatt_char(BLNR_WRITE_UUID, BLNR_COMMIT, response=False)
+                async def wait_for_reply(opcode: int) -> None:
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + BLNR_REPLY_TIMEOUT
+                    while True:
+                        if any(is_valid_blnr_frame(f, opcode) for f in notifications):
+                            return
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            raise APIConnectionError(
+                                "BLNR acknowledgement missing; command outcome unknown"
+                            )
+                        reply_event.clear()
+                        try:
+                            await asyncio.wait_for(reply_event.wait(), remaining)
+                        except asyncio.TimeoutError as exc:
+                            raise APIConnectionError(
+                                "BLNR acknowledgement missing; command outcome unknown"
+                            ) from exc
 
-                loop = asyncio.get_running_loop()
-                deadline = loop.time() + BLNR_REPLY_TIMEOUT
-                while True:
-                    # Only matching validated protocol frames count as replies.
-                    # BLNR status doesn't use the BL-IP status decoder.
-                    if any(is_valid_blnr_frame(f, 0x06) for f in notifications):
-                        _LOGGER.info(
-                            "BLNR %s - %s sent; control reply received (physical state not independently verified)",
-                            self.mac_address, label,
-                        )
-                        return
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        raise APIConnectionError(
-                            "BLNR acknowledgement missing; command outcome unknown"
-                        )
-                    reply_event.clear()
-                    try:
-                        await asyncio.wait_for(reply_event.wait(), remaining)
-                    except asyncio.TimeoutError as exc:
-                        raise APIConnectionError(
-                            "BLNR acknowledgement missing; command outcome unknown"
-                        ) from exc
+                await client.write_gatt_char(BLNR_WRITE_UUID, command, response=False)
+                if verify_commit:
+                    # Match the app capture: control reply, commit, commit reply.
+                    await wait_for_reply(0x06)
+                    notifications.clear()
+                await client.write_gatt_char(BLNR_WRITE_UUID, BLNR_COMMIT, response=False)
+                await wait_for_reply(0x0E if verify_commit else 0x06)
+                _LOGGER.info(
+                    "BLNR %s - %s acknowledged (physical state not independently verified)",
+                    self.mac_address, label,
+                )
+                return
             except asyncio.CancelledError:
                 raise
             except APIConnectionError:
@@ -112,8 +132,34 @@ class BLNRAPI(SolemAPI):
         await self._send_blnr_command(BLNR_ON, "enable controller")
 
     async def turn_off_one_day(self) -> None:
-        """Disable BLNR controller for one day; other durations unverified."""
-        await self._send_blnr_command(BLNR_OFF_ONE_DAY, "disable for one day")
+        """Retain the hardware-validated one-day operation."""
+        await self.turn_off_x_days(1)
+
+    async def turn_off_x_days(self, days: int) -> None:
+        """Suspend scheduled watering; values other than one are experimental."""
+        _validate_parameter(days, "days")
+        await self._send_blnr_command(
+            _control_frame(0xA0, days), f"disable for {days} days"
+        )
+
+    async def sprinkle_station_x_for_y_minutes(self, station: int, minutes: int) -> None:
+        """Start the single BL-NR station; durations beyond one minute are inferred."""
+        if type(station) is not int or station != 1:
+            raise APIConnectionError("BLNR supports only station 1")
+        _validate_parameter(minutes, "minutes")
+        # The app's one-minute frame is 05 04 00 0a 00 01 00 14 00.
+        # Keep the upper duration byte zero until its semantics are captured.
+        prefix = bytes((0x05, 0x04, 0x00, 0x0A, 0x00, minutes, 0x00))
+        command = prefix + bytes((sum(prefix) & 0xFF, 0x00))
+        await self._send_blnr_command(
+            command, f"water station 1 for {minutes} minutes", verify_commit=True
+        )
+
+    async def stop_manual_sprinkle(self) -> None:
+        """Stop manual watering using the hardware-captured BL-NR frame."""
+        await self._send_blnr_command(
+            BLNR_STOP_MANUAL, "stop manual watering", verify_commit=True
+        )
 
     async def read_raw(self, opcode: int, index: int | None = None) -> dict:
         """Read a BLNR block without altering controller settings."""
@@ -194,3 +240,4 @@ class BLNRAPI(SolemAPI):
                     except Exception:  # noqa: BLE001
                         _LOGGER.debug("BLNR notification cleanup failed", exc_info=True)
                 await self._disconnect_client(client)
+
