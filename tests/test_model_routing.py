@@ -47,7 +47,7 @@ def test_blnr_model_routes_to_separate_api():
     "turn_off_permanent",
 ])
 def test_unverified_blnr_commands_are_rejected(action):
-    with pytest.raises(HomeAssistantError, match="does not yet support"):
+    with pytest.raises(HomeAssistantError, match="does not support"):
         _get_api(SimpleNamespace(), call(model="bl_nr"), action)
 
 
