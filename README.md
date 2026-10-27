@@ -69,13 +69,15 @@ BL-NR supports these additional experimental operations:
 
 | Service | Parameters | Hardware evidence |
 | --- | --- | --- |
+| `turn_off_permanent` | No day count | App capture confirms indefinite disable with A0 00, followed by re-enable |
 | `turn_off_x_days` | `days: 1..255` | App captures confirm 1 and 10 days; other values use the same parameter field |
 | `sprinkle_station_x_for_y_minutes` | `station: 1`, `minutes: 1..255` | App captures confirm 1, 2 and 20 minutes; other values use the same duration field |
 | `stop_manual_sprinkle` | No duration | App capture confirms stop about 11 seconds after start |
 
 The 255 limit is a conservative encoding bound, not a verified device limit.
 Higher duration bytes and other station IDs are not enabled without captures.
-Permanent disable, all-station watering and program execution remain unsupported.
+All-station watering and explicit program execution are BL-IP-only services;
+the single-station BL-NR app does not expose these operations.
 Read-only information, station configuration and raw status queries remain available.
 
 ```yaml
@@ -89,6 +91,9 @@ data:
 
 Use `solem_toolkit.stop_manual_sprinkle` with the same MAC and model to stop.
 For a suspension, use `solem_toolkit.turn_off_x_days` with configurable `days`.
+For indefinite suspension, use `solem_toolkit.turn_off_permanent`; re-enable with
+`solem_toolkit.turn_on`. Zero days are reserved for indefinite suspension in the
+protocol and remain rejected by `turn_off_x_days`.
 Validate inferred values against the app and physical controller before relying on them.
 
 BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
@@ -101,6 +106,7 @@ A new app HCI capture on 2026-10-27 confirms these frames:
 | Water two minutes | `0504000a0002001500` | `06060242240002600ee400` | `0e060042240002600eea00` |
 | Water twenty minutes | `0504000a0014002700` | `06060242240014600ef600` | `0e060042240014600efc00` |
 | Suspend ten days | `050400a00a0000b300` | `0606022000a001600e3d01` | `0e06002000a001600e4301` |
+| Disable permanently | `050400a0000000a900` | `06060220000001600d9c00` | `0e060020000001600da200` |
 | Enable controller | `050400c0000000c900` | `06060240000001600ebd00` | `0e060040000001600ec300` |
 | Stop manual watering | `050400900000009900` | `060602400000016010bf00` | `0e060040000001600fc400` |
 

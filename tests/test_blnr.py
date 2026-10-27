@@ -299,7 +299,8 @@ async def test_invalid_parameters_never_connect(setup_api, method, args):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["missing_control", "missing_commit", "bad_control", "bad_commit", "write_failed"])
-async def test_manual_failure_is_never_replayed(setup_api, monkeypatch, failure):
+@pytest.mark.parametrize("operation", ["manual", "permanent"])
+async def test_manual_failure_is_never_replayed(setup_api, monkeypatch, failure, operation):
     api, client = setup_api
     monkeypatch.setattr("custom_components.solem_toolkit.blnr.BLNR_REPLY_TIMEOUT", 0.01)
 
@@ -317,7 +318,10 @@ async def test_manual_failure_is_never_replayed(setup_api, monkeypatch, failure)
 
     client.write_gatt_char.side_effect = write
     with pytest.raises(APIConnectionError, match="outcome unknown"):
-        await api.sprinkle_station_x_for_y_minutes(1, 1)
+        if operation == "manual":
+            await api.sprinkle_station_x_for_y_minutes(1, 1)
+        else:
+            await api.turn_off_permanent()
     assert client.write_gatt_char.await_count == (2 if failure in ("missing_commit", "bad_commit") else 1)
     client.disconnect.assert_awaited_once()
 
@@ -352,3 +356,26 @@ async def test_captured_ten_day_suspend_and_enable(setup_api, days, command, ack
     else:
         await api.turn_off_x_days(days)
     assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command, BLNR_COMMIT.hex()]
+
+
+@pytest.mark.asyncio
+async def test_captured_permanent_disable_and_reenable(setup_api):
+    api, client = setup_api
+    captures = [
+        ("turn_off_permanent", "050400a0000000a900", "06060220000001600d9c00", "0e060020000001600da200"),
+        ("turn_on", "050400c0000000c900", "06060240000001600dbc00", "0e060040000001600dc200"),
+    ]
+    for method, command, ack, commit in captures:
+        client.write_gatt_char.reset_mock()
+
+        async def write(_uuid, payload, response):
+            assert response is False
+            callback = client.start_notify.call_args.args[1]
+            frame = bytes.fromhex(commit if payload == BLNR_COMMIT else ack)
+            assert is_valid_blnr_frame(frame, frame[0])
+            callback(0, bytearray(frame))
+
+        client.write_gatt_char.side_effect = write
+        await getattr(api, method)()
+        assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command, BLNR_COMMIT.hex()]
+    assert client.disconnect.await_count == 2

@@ -42,7 +42,6 @@ def test_blnr_model_routes_to_separate_api():
 @pytest.mark.parametrize("action", [
     "sprinkle_all_stations_for_y_minutes",
     "run_program_x",
-    "turn_off_permanent",
 ])
 def test_unverified_blnr_commands_are_rejected(action):
     with pytest.raises(HomeAssistantError, match="does not support"):
@@ -196,4 +195,14 @@ async def test_blnr_stop_service_routes_to_blnr(monkeypatch):
     sent = AsyncMock()
     monkeypatch.setattr(BLNRAPI, "stop_manual_sprinkle", sent)
     await async_stop_manual_sprinkle(SimpleNamespace(), call(model="bl_nr"))
+    sent.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_blnr_permanent_disable_routes_to_blnr(monkeypatch):
+    from custom_components.solem_toolkit.services import async_turn_off_permanent
+
+    sent = AsyncMock()
+    monkeypatch.setattr(BLNRAPI, "turn_off_permanent", sent)
+    await async_turn_off_permanent(SimpleNamespace(), call(model="bl_nr"))
     sent.assert_awaited_once()

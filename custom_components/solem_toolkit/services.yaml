@@ -18,7 +18,7 @@ list_characteristics:
       example: "5.1.7"
 
 turn_off_permanent:
-  description: "Turn off the sprinkler permanently"
+  description: "Disable scheduled irrigation indefinitely (BL-IP and experimental BLNR). Use turn_on to re-enable."
   fields:
     device_mac:
       description: "Device's MAC address"

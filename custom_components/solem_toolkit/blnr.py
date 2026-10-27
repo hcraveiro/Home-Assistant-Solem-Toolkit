@@ -123,6 +123,12 @@ class BLNRAPI(SolemAPI):
         """Enable BLNR controller; not equivalent to watering a station."""
         await self._send_blnr_command(BLNR_ON, "enable controller")
 
+    async def turn_off_permanent(self) -> None:
+        """Disable scheduled irrigation indefinitely using the app-captured zero-day mode."""
+        await self._send_blnr_command(
+            _control_frame(0xA0, 0), "disable permanently", verify_commit=True
+        )
+
     async def turn_off_one_day(self) -> None:
         """Retain the hardware-validated one-day operation."""
         await self.turn_off_x_days(1)

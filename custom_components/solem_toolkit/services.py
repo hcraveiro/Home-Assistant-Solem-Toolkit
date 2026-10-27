@@ -30,7 +30,7 @@ def _get_timeout(call: ServiceCall) -> int:
 
 
 SUPPORTED_MODELS = ("bl_ip", "bl_nr")
-BLNR_ACTIONS = {"sprinkle_station_x_for_y_minutes", "stop_manual_sprinkle", "turn_on", "turn_off_x_days", "list_characteristics", "read_status", "read_info_block", "read_station_config"}
+BLNR_ACTIONS = {"turn_off_permanent", "sprinkle_station_x_for_y_minutes", "stop_manual_sprinkle", "turn_on", "turn_off_x_days", "list_characteristics", "read_status", "read_info_block", "read_station_config"}
 
 
 def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
@@ -49,7 +49,7 @@ def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
         if action not in BLNR_ACTIONS:
             raise HomeAssistantError(
                 f"BL-NR does not support {action}; available actions are "
-                "turn_on, turn_off_x_days(days=1..255), list_characteristics, "
+                "turn_on, turn_off_permanent, turn_off_x_days(days=1..255), list_characteristics, "
                 "read_status, read_info_block, read_station_config, "
                 "sprinkle_station_x_for_y_minutes and stop_manual_sprinkle"
             )
