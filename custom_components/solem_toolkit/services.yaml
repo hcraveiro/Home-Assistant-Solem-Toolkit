@@ -76,3 +76,20 @@ read_status:
     device_mac:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
+
+# Experimental BLNR-only controls. They do not start or stop manual watering.
+blnr_turn_on:
+  description: "Experimental BLNR: enable controller (does not start watering)."
+  fields:
+    device_mac:
+      required: true
+      description: "BLNR controller Bluetooth MAC address"
+      example: "00:11:22:33:44:55"
+
+blnr_turn_off_one_day:
+  description: "Experimental BLNR: disable controller for one day (may suppress scheduled watering)."
+  fields:
+    device_mac:
+      required: true
+      description: "BLNR controller Bluetooth MAC address"
+      example: "00:11:22:33:44:55"
