@@ -49,7 +49,7 @@ A big thank you to [pcman75](https://github.com/pcman75) for doing a [reverse en
 All existing services remain unchanged. They now accept two **optional** fields:
 
 - `model`: defaults to `bl_ip` when omitted, preserving existing automations.
-  Use `blnr` to select the experimental BLNR transport.
+  Use `bl_nr` to select the experimental BLNR transport.
 - `version`: optional firmware/model version string. Currently informational;
   specifying it never changes protocol behavior.
 
@@ -59,14 +59,12 @@ For instance, enable a BLNR controller using the existing service:
 action: solem_toolkit.turn_on
 data:
   device_mac: "AA:BB:CC:DD:EE:FF"
-  model: blnr
+  model: bl_nr
 ```
 
-`solem_toolkit.turn_off_x_days` supports `model: blnr` only with
+`solem_toolkit.turn_off_x_days` supports `model: bl_nr` only with
 `days: 1`, based on a captured physical command. This can suppress
-scheduled irrigation for one day. Other BLNR operations such as manual
-watering, Stop, permanent disable, programs and read-status are deliberately
-rejected until their BLE protocols are independently established.
+scheduled irrigation for one day. Other BLNR operations such as manual watering, Stop, permanent disable and program execution remain unsupported. Read-only information, station configuration and raw status queries are available experimentally.
 
 BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
 The captured commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
@@ -84,7 +82,7 @@ the raw `0xf8` payload as a battery percentage or controller state yet.
 action: solem_toolkit.read_info_block
 data:
   device_mac: "AA:BB:CC:DD:EE:FF"
-  model: blnr
+  model: bl_nr
   index: 1
 ```
 
@@ -92,7 +90,7 @@ data:
 action: solem_toolkit.read_station_config
 data:
   device_mac: "AA:BB:CC:DD:EE:FF"
-  model: blnr
+  model: bl_nr
   index: 2
 ```
 
@@ -100,7 +98,7 @@ data:
 action: solem_toolkit.read_status
 data:
   device_mac: "AA:BB:CC:DD:EE:FF"
-  model: blnr
+  model: bl_nr
 ```
 
 For BL-IP, `read_status` preserves its existing decoded response and event.

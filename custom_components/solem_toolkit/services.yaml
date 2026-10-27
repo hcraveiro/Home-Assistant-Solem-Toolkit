@@ -5,14 +5,14 @@ list_characteristics:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -24,14 +24,14 @@ turn_off_permanent:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -43,14 +43,14 @@ turn_off_x_days:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -65,14 +65,14 @@ turn_on:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -84,14 +84,14 @@ sprinkle_station_x_for_y_minutes:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -110,14 +110,14 @@ sprinkle_all_stations_for_y_minutes:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -132,14 +132,14 @@ run_program_x:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -154,14 +154,14 @@ stop_manual_sprinkle:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -173,14 +173,14 @@ read_status:
       description: "Device's MAC address"
       example: "00:11:22:33:44:55"
     model:
-      description: "Optional device model (bl_ip by default; blnr experimental)."
+      description: "Optional device model (bl_ip by default; bl_nr experimental)."
       example: "bl_ip"
       default: "bl_ip"
       selector:
         select:
           options:
             - "bl_ip"
-            - "blnr"
+            - "bl_nr"
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
@@ -198,7 +198,7 @@ read_info_block:
       selector:
         select:
           options:
-            - "blnr"
+            - "bl_nr"
     index:
       description: "Information block index (0-255)."
       default: 1
@@ -225,7 +225,7 @@ read_station_config:
       selector:
         select:
           options:
-            - "blnr"
+            - "bl_nr"
     index:
       description: "Station/program configuration block index (0-255)."
       default: 2

@@ -29,12 +29,12 @@ def _get_timeout(call: ServiceCall) -> int:
     return max(MIN_BLUETOOTH_TIMEOUT, timeout_int)
 
 
-SUPPORTED_MODELS = ("bl_ip", "blnr")
+SUPPORTED_MODELS = ("bl_ip", "bl_nr")
 BLNR_ACTIONS = {"turn_on", "turn_off_x_days", "list_characteristics", "read_status", "read_info_block", "read_station_config"}
 
 
 def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
-    """Select the protocol by model, while retaining the legacy BL-IP default."""
+    """Select the protocol by model, while retaining the BL-IP default."""
     model = call.data.get("model", "bl_ip")
     version = call.data.get("version")
     if not isinstance(model, str) or model not in SUPPORTED_MODELS:
@@ -45,7 +45,7 @@ def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
         not isinstance(version, str) or not version.strip() or len(version) > 64
     ):
         raise HomeAssistantError("version must be a non-empty string (max 64 characters)")
-    if model == "blnr":
+    if model == "bl_nr":
         if action not in BLNR_ACTIONS:
             raise HomeAssistantError(
                 f"BLNR does not yet support {action}; only turn_on and "
