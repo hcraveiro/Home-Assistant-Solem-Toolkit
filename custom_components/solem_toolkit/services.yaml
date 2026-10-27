@@ -167,7 +167,7 @@ stop_manual_sprinkle:
       example: "5.1.7"
 
 read_status:
-  description: "Ask the device for its current state (watering station, seconds left, battery level). Writes it to the log, fires a solem_toolkit_status event, and returns it as the service response. Changes nothing on the device."
+  description: "Read device status without changes. BL-IP returns decoded values and an event; BLNR experimentally returns raw protocol bytes without decoded battery/state."
   fields:
     device_mac:
       description: "Device's MAC address"
@@ -184,3 +184,57 @@ read_status:
     version:
       description: "Optional firmware or model version (informational only)."
       example: "5.1.7"
+
+read_info_block:
+  description: "Read a raw BLNR device information block by index (experimental, read-only)."
+  fields:
+    device_mac:
+      description: "Device's MAC address"
+      required: true
+      example: "00:11:22:33:44:55"
+    model:
+      description: "Must be blnr."
+      required: true
+      selector:
+        select:
+          options:
+            - "blnr"
+    index:
+      description: "Information block index (0-255)."
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 255
+          step: 1
+          mode: box
+    bluetooth_timeout:
+      description: "Bluetooth connection timeout in seconds."
+      default: 10
+
+read_station_config:
+  description: "Read a raw BLNR station/program configuration block by index (experimental, read-only)."
+  fields:
+    device_mac:
+      description: "Device's MAC address"
+      required: true
+      example: "00:11:22:33:44:55"
+    model:
+      description: "Must be blnr."
+      required: true
+      selector:
+        select:
+          options:
+            - "blnr"
+    index:
+      description: "Station/program configuration block index (0-255)."
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 255
+          step: 1
+          mode: box
+    bluetooth_timeout:
+      description: "Bluetooth connection timeout in seconds."
+      default: 10
