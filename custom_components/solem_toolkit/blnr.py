@@ -23,9 +23,9 @@ BLNR_REPLY_TIMEOUT = 4.0
 
 
 def _control_frame(mode: int, parameter: int) -> bytes:
-    """Build a control frame with the existing 8-bit checksum and zero trailer."""
+    """Build a control frame with the 16-bit little-endian additive checksum."""
     prefix = bytes((0x05, 0x04, 0x00, mode, parameter, 0x00, 0x00))
-    return prefix + bytes((sum(prefix) & 0xFF, 0x00))
+    return prefix + (sum(prefix) & 0xFFFF).to_bytes(2, "little")
 
 
 def _validate_parameter(value: int, name: str) -> None:
@@ -35,20 +35,12 @@ def _validate_parameter(value: int, name: str) -> None:
 
 
 def is_valid_blnr_frame(frame: bytes, opcode: int) -> bool:
-    """Validate the reply length and checksum without assuming a zero read trailer.
-
-    Hardware-captured indexed replies (0x02/0x0A) end in non-zero bytes.
-    Their last-byte semantics are not yet established. Control and status
-    frames retain the observed zero-terminator requirement.
-    """
+    """Validate the complete 16-bit checksum confirmed by app HCI captures."""
     if len(frame) < 5 or frame[0] != opcode:
         return False
-    payload_length = frame[1]
-    if len(frame) != payload_length + 5:
+    if len(frame) != frame[1] + 5:
         return False
-    if opcode not in (0x02, 0x0A) and frame[-1] != 0:
-        return False
-    return (sum(frame[:-2]) & 0xFF) == frame[-2]
+    return (sum(frame[:-2]) & 0xFFFF) == int.from_bytes(frame[-2:], "little")
 
 
 class BLNRAPI(SolemAPI):
@@ -136,21 +128,21 @@ class BLNRAPI(SolemAPI):
         await self.turn_off_x_days(1)
 
     async def turn_off_x_days(self, days: int) -> None:
-        """Suspend scheduled watering; values other than one are experimental."""
+        """Suspend scheduled watering; one and ten days have app capture evidence."""
         _validate_parameter(days, "days")
         await self._send_blnr_command(
             _control_frame(0xA0, days), f"disable for {days} days"
         )
 
     async def sprinkle_station_x_for_y_minutes(self, station: int, minutes: int) -> None:
-        """Start the single BL-NR station; durations beyond one minute are inferred."""
+        """Start the single BL-NR station; 1, 2 and 20 minutes have capture evidence."""
         if type(station) is not int or station != 1:
             raise APIConnectionError("BLNR supports only station 1")
         _validate_parameter(minutes, "minutes")
         # The app's one-minute frame is 05 04 00 0a 00 01 00 14 00.
         # Keep the upper duration byte zero until its semantics are captured.
         prefix = bytes((0x05, 0x04, 0x00, 0x0A, 0x00, minutes, 0x00))
-        command = prefix + bytes((sum(prefix) & 0xFF, 0x00))
+        command = prefix + (sum(prefix) & 0xFFFF).to_bytes(2, "little")
         await self._send_blnr_command(
             command, f"water station 1 for {minutes} minutes", verify_commit=True
         )
@@ -173,7 +165,7 @@ class BLNRAPI(SolemAPI):
             if not isinstance(index, int) or not 0 <= index <= 255:
                 raise ValueError("BLNR index must be between 0 and 255")
             prefix = bytes((opcode, 1, 0, index))
-            request = prefix + bytes((sum(prefix) & 0xFF, 0))
+            request = prefix + (sum(prefix) & 0xFFFF).to_bytes(2, "little")
 
         expected_opcode = (opcode + 1) & 0xFF
         async with self._device_lock:
@@ -211,6 +203,7 @@ class BLNRAPI(SolemAPI):
                                 "request_hex": request.hex(),
                                 "response_hex": frame.hex(),
                                 "trailer_hex": f"{frame[-1]:02x}",
+                                "checksum_hex": frame[-2:].hex(),
                                 "valid_frame": valid,
                             }
                     remaining = deadline - loop.time()

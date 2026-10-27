@@ -37,7 +37,7 @@ turn_off_permanent:
       example: "5.1.7"
 
 turn_off_x_days:
-  description: "Turn off sprinkler for X days (BLNR experimental: 1-255 days; only 1 day physically verified)"
+  description: "Turn off sprinkler for X days (BLNR experimental: 1-255 days; 1 and 10 days captured)"
   fields:
     device_mac:
       description: "Device's MAC address"
@@ -78,7 +78,7 @@ turn_on:
       example: "5.1.7"
 
 sprinkle_station_x_for_y_minutes:
-  description: "Sprinkle on station X for Y minutes. BLNR experimental: station 1, 1-255 minutes; only 1 minute captured."
+  description: "Sprinkle on station X for Y minutes. BLNR experimental: station 1, 1-255 minutes; 1, 2 and 20 minutes captured."
   fields:
     device_mac:
       description: "Device's MAC address"
