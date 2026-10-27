@@ -151,7 +151,7 @@ class BLNRAPI(SolemAPI):
                             )
                             return {
                                 "device_mac": self.mac_address,
-                                "model": "blnr",
+                                "model": "bl_nr",
                                 "request_opcode": f"0x{opcode:02x}",
                                 "response_opcode": f"0x{expected_opcode:02x}",
                                 "index": index,
