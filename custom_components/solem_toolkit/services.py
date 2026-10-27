@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from . import protocol
 from .api import APIConnectionError, SolemAPI
+from .blnr import BLNRAPI
 from .const import DEFAULT_BLUETOOTH_TIMEOUT, DOMAIN, MIN_BLUETOOTH_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,7 +168,28 @@ async def async_read_status(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     return data
 
 
+async def async_blnr_control(hass: HomeAssistant, call: ServiceCall, *, enable: bool) -> None:
+    """Execute one of the two captured BLNR commands (experimental)."""
+    device_mac = call.data.get("device_mac")
+    if not isinstance(device_mac, str) or not device_mac.strip():
+        raise HomeAssistantError("device_mac is required")
+    api = BLNRAPI(hass, device_mac, bluetooth_timeout=_get_timeout(call))
+    try:
+        if enable:
+            await api.turn_on()
+        else:
+            await api.turn_off_one_day()
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
+
+
 def async_setup_services(hass: HomeAssistant) -> None:
+    async def _handle_blnr_on(call: ServiceCall) -> None:
+        await async_blnr_control(hass, call, enable=True)
+
+    async def _handle_blnr_off_one_day(call: ServiceCall) -> None:
+        await async_blnr_control(hass, call, enable=False)
+
     async def _handle_list_characteristics(call: ServiceCall) -> None:
         await async_list_characteristics(hass, call)
 
@@ -195,6 +217,10 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _handle_read_status(call: ServiceCall) -> ServiceResponse:
         return await async_read_status(hass, call)
 
+    hass.services.async_register(DOMAIN, "blnr_turn_on", _handle_blnr_on)
+    hass.services.async_register(
+        DOMAIN, "blnr_turn_off_one_day", _handle_blnr_off_one_day
+    )
     hass.services.async_register(
         DOMAIN, "list_characteristics", _handle_list_characteristics)
     hass.services.async_register(
