@@ -105,3 +105,71 @@ async def test_unrelated_notification_does_not_confirm_command(setup_api, monkey
     with pytest.raises(APIConnectionError, match="acknowledgement missing"):
         await api.turn_on()
     assert client.write_gatt_char.await_count == 2
+
+
+
+
+import pytest
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opcode,index,expected,reply_opcode", [
+    (0x01, 1, "010100010300", 0x02),
+    (0x09, 2, "090100020c00", 0x0A),
+    (0xF7, None, "f70000f700", 0xF8),
+])
+async def test_read_queries_use_notify_without_commit(setup_api, opcode, index, expected, reply_opcode):
+    api, client = setup_api
+
+    async def write(uuid, payload, response):
+        callback = client.start_notify.call_args.args[1]
+        header = bytes((reply_opcode, 0, 0))
+        callback(0, bytearray(header + bytes((sum(header) & 255, 0))))
+
+    client.write_gatt_char.side_effect = write
+    result = await api.read_raw(opcode, index)
+    assert result["request_hex"] == expected
+    assert result["response_opcode"] == f"0x{reply_opcode:02x}"
+    assert result["valid_frame"] is True
+    assert client.write_gatt_char.await_count == 1
+    assert client.write_gatt_char.await_args.args[1] != BLNR_COMMIT
+    client.stop_notify.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wrong_reply_opcode_times_out(setup_api, monkeypatch):
+    api, client = setup_api
+    monkeypatch.setattr("custom_components.solem_toolkit.blnr.BLNR_REPLY_TIMEOUT", 0.01)
+
+    async def write(uuid, payload, response):
+        callback = client.start_notify.call_args.args[1]
+        callback(0, bytearray.fromhex("0600000600"))
+
+    client.write_gatt_char.side_effect = write
+    with pytest.raises(APIConnectionError, match="timed out"):
+        await api.read_raw(0x01, 1)
+
+
+@pytest.mark.asyncio
+async def test_raw_unverified_frame_is_returned_not_decoded(setup_api):
+    api, client = setup_api
+
+    async def write(uuid, payload, response):
+        callback = client.start_notify.call_args.args[1]
+        callback(0, bytearray.fromhex("f80300000000"))
+
+    client.write_gatt_char.side_effect = write
+    result = await api.read_raw(0xF7)
+    assert result["response_hex"] == "f80300000000"
+    assert result["valid_frame"] is False
+
+
+@pytest.mark.parametrize("opcode,index", [(0x03, None), (0x01, None), (0x09, 256), (0xF7, 1)])
+@pytest.mark.asyncio
+async def test_invalid_queries_never_connect(setup_api, opcode, index):
+    api, client = setup_api
+    with pytest.raises(ValueError):
+        await api.read_raw(opcode, index)
+    client.write_gatt_char.assert_not_awaited()

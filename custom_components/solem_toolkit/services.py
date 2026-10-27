@@ -30,7 +30,7 @@ def _get_timeout(call: ServiceCall) -> int:
 
 
 SUPPORTED_MODELS = ("bl_ip", "blnr")
-BLNR_ACTIONS = {"turn_on", "turn_off_x_days", "list_characteristics"}
+BLNR_ACTIONS = {"turn_on", "turn_off_x_days", "list_characteristics", "read_status", "read_info_block", "read_station_config"}
 
 
 def _get_api(hass: HomeAssistant, call: ServiceCall, action: str) -> SolemAPI:
@@ -189,6 +189,8 @@ async def async_read_status(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     _LOGGER.info("Solem %s - Service call: read_status", device_mac)
     api = _get_api(hass, call, "read_status")
     try:
+        if isinstance(api, BLNRAPI):
+            return await api.read_raw(0xF7)
         status = await api.read_status()
     except APIConnectionError as exc:
         raise HomeAssistantError(str(exc)) from exc
@@ -206,6 +208,25 @@ async def async_read_status(hass: HomeAssistant, call: ServiceCall) -> ServiceRe
     data = protocol.as_event_data(status)
     data["device_mac"] = device_mac
     return data
+
+
+async def _async_blnr_indexed_read(
+    hass: HomeAssistant, call: ServiceCall, opcode: int, action: str
+) -> ServiceResponse:
+    """Return raw BLNR read response pending hardware decoding."""
+    api = _get_api(hass, call, action)
+    if not isinstance(api, BLNRAPI):
+        raise HomeAssistantError(f"{action} is available only for model blnr")
+    try:
+        index = int(call.data.get("index", 1))
+    except (ValueError, TypeError) as exc:
+        raise HomeAssistantError("index must be an integer from 0 to 255") from exc
+    if not 0 <= index <= 255:
+        raise HomeAssistantError("index must be an integer from 0 to 255")
+    try:
+        return await api.read_raw(opcode, index)
+    except APIConnectionError as exc:
+        raise HomeAssistantError(str(exc)) from exc
 
 
 def async_setup_services(hass: HomeAssistant) -> None:
@@ -236,6 +257,20 @@ def async_setup_services(hass: HomeAssistant) -> None:
     async def _handle_read_status(call: ServiceCall) -> ServiceResponse:
         return await async_read_status(hass, call)
 
+    async def _handle_read_info(call: ServiceCall) -> ServiceResponse:
+        return await _async_blnr_indexed_read(hass, call, 0x01, "read_info_block")
+
+    async def _handle_read_station(call: ServiceCall) -> ServiceResponse:
+        return await _async_blnr_indexed_read(hass, call, 0x09, "read_station_config")
+
+    hass.services.async_register(
+        DOMAIN, "read_info_block", _handle_read_info,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN, "read_station_config", _handle_read_station,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     hass.services.async_register(
         DOMAIN, "list_characteristics", _handle_list_characteristics)
     hass.services.async_register(
