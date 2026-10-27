@@ -46,23 +46,30 @@ A big thank you to [pcman75](https://github.com/pcman75) for doing a [reverse en
 
 ## Experimental BLNR support
 
-Solem **BLNR** uses a separate BLE protocol and is **not** interchangeable with
-the standard BL-IP services. A preliminary implementation provides only:
+All existing services remain unchanged. They now accept two **optional** fields:
 
-- `solem_toolkit.blnr_turn_on` — enable the controller (does **not** start watering).
-- `solem_toolkit.blnr_turn_off_one_day` — disable the controller for one day.
-  **Warning:** this can prevent scheduled irrigation during that period.
+- `model`: defaults to `bl_ip` when omitted, preserving existing automations.
+  Use `blnr` to select the experimental BLNR transport.
+- `version`: optional firmware/model version string. Currently informational;
+  specifying it never changes protocol behavior.
 
-Both services take `device_mac`. They require a connectable Home Assistant Bluetooth
-adapter or active BLE proxy. They are intentionally **not** used by Smart Water
-Controller's BL-IP irrigation Start/Stop commands. Neither manual station watering,
-program execution, nor a general-purpose BLNR Stop command has been reverse-engineered.
+For instance, enable a BLNR controller using the existing service:
 
-The command bytes, proprietary GATT UUIDs and commit were taken from the hardware
-capture supplied in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
-Unit tests mock BLE transactions; **physical behavior and response validation must
-still be checked on a BLNR controller** before calling the device supported.
+```yaml
+action: solem_toolkit.turn_on
+data:
+  device_mac: "AA:BB:CC:DD:EE:FF"
+  model: blnr
+```
 
-Test carefully in a controlled period when watering interruption is acceptable.
-Missing/invalid replies are reported as an *unknown outcome*; the Toolkit never
-automatically replays these commands.
+`solem_toolkit.turn_off_x_days` supports `model: blnr` only with
+`days: 1`, based on a captured physical command. This can suppress
+scheduled irrigation for one day. Other BLNR operations such as manual
+watering, Stop, permanent disable, programs and read-status are deliberately
+rejected until their BLE protocols are independently established.
+
+BLNR has different UUIDs, checksum, frames and commit behavior from BL-IP.
+The captured commands were documented in [legacy issue #19](https://github.com/hcraveiro/Home-Assistant-Solem-Bluetooth-Watering-Controller/issues/19).
+Mocked tests are not a substitute for physical-device validation. Use a
+connectable BLE adapter/proxy, test when temporary watering interruption is
+acceptable, and do not equate command acknowledgement with verified state.
