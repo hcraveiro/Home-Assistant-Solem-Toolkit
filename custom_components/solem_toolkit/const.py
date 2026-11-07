@@ -40,14 +40,9 @@ NOTIFY_SUBSCRIBE_TIMEOUT = 5
 # making.
 STATUS_COLLECT_SECONDS = 1.5
 
-# How long to wait before retrying a command after a connection failure.
-# A failed GATT connection leaves the adapter (or the ESPHome proxy) tearing
-# down the previous link for several seconds - proxies log "Timeout waiting for
-# teardown, forcing IDLE" - so retrying immediately just reuses a dying slot.
-RETRY_BACKOFF_SECONDS = 5
-
-# How many times a whole connect-write-commit cycle is attempted. A weak link
-# (RSSI around -95 dBm) loses roughly one attempt in three, and an ESPHome
-# proxy blacks the radio out for ~1s every time WiFi scans, so a single retry
-# is not enough to make a user-pressed button reliable.
-COMMAND_MAX_ATTEMPTS = 4
+# Connection acquisition only, shared by every model and diagnostic path.
+# A short pause tolerates transient proxy contention without replaying writes.
+# Slow teardown can still exhaust the single configured Bluetooth timeout;
+# these limits never multiply that budget. Not user-facing configuration.
+CONNECTION_RETRY_BACKOFF_SECONDS = 1.0
+CONNECTION_MAX_ATTEMPTS = 3

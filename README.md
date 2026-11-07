@@ -118,6 +118,22 @@ A new app HCI capture on 2026-10-27 confirms these frames:
 Manual operations await a valid control reply before sending `0d00000d00`,
 then await a valid commit reply, matching the captured app sequence.
 No control command is replayed automatically after a write, including on timeout.
+Both BL-IP and BL-NR commands and read-only diagnostics use the same shared
+connection-acquisition policy, up to three attempts
+with a one-second pause between failures. All attempts and pauses share one
+configured Bluetooth timeout budget; a connection attempt that consumes that
+budget leaves no time for another attempt. This does not multiply Smart Water
+Controller's command timeout. Subscription, write, commit and acknowledgement
+failures are never retried. Connection exhaustion reports the attempt count and
+last connection error, with an explicit `nothing sent` indication (no application
+request was sent during this acquisition). The three-attempt/one-second limits
+are internal constants, not new UI options. This replaces BL-IP's former four
+attempts with five-second pauses and a separate timeout per attempt: slow proxy
+teardown now has a shorter recovery window, but service latency is bounded by a
+single acquisition budget. Lock queueing, protocol replies and disconnection
+are outside that budget; it is not an end-to-end command timeout. Cancellation
+and timeout wait for failed-acquisition cleanup before releasing the device
+lock, so slow backend teardown can exceed the nominal acquisition deadline.
 An acknowledgement is not independent proof of physical watering state.
 Other firmware variants remain unverified. Bluetooth connections stay on demand.
 

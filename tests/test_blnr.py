@@ -80,6 +80,8 @@ async def test_subscription_failure_sends_no_command(setup_api):
     with pytest.raises(APIConnectionError, match="nothing sent"):
         await api.turn_on()
     client.write_gatt_char.assert_not_awaited()
+    api._connect_client.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -89,6 +91,8 @@ async def test_uncertain_write_is_never_replayed(setup_api):
     with pytest.raises(APIConnectionError, match="outcome unknown"):
         await api.turn_on()
     assert client.write_gatt_char.await_count == 1
+    api._connect_client.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -105,7 +109,9 @@ async def test_unrelated_notification_does_not_confirm_command(setup_api, monkey
     with pytest.raises(APIConnectionError, match="acknowledgement missing"):
         await api.turn_on()
     assert client.write_gatt_char.await_count == 2
-
+    api._connect_client.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
+    assert not api._device_lock.locked()
 
 
 @pytest.mark.asyncio
@@ -379,3 +385,86 @@ async def test_captured_permanent_disable_and_reenable(setup_api):
         await getattr(api, method)()
         assert [c.args[1].hex() for c in client.write_gatt_char.await_args_list] == [command, BLNR_COMMIT.hex()]
     assert client.disconnect.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_connection_retry_then_success(setup_api, monkeypatch):
+    api, client = setup_api
+    monkeypatch.setattr("custom_components.solem_toolkit.api.asyncio.sleep", AsyncMock())
+    api._connect_client.side_effect = [APIConnectionError("busy"), client]
+
+    async def write(uuid, payload, response):
+        if payload == BLNR_COMMIT:
+            client.start_notify.call_args.args[1](0, bytearray(reply(0x06)))
+
+    client.write_gatt_char.side_effect = write
+    await api.turn_on()
+    assert api._connect_client.await_count == 2
+    assert client.write_gatt_char.await_count == 2
+    client.disconnect.assert_awaited_once()
+    assert not api._device_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_connection_retry_exhaustion(setup_api, monkeypatch):
+    api, client = setup_api
+    monkeypatch.setattr("custom_components.solem_toolkit.api.asyncio.sleep", AsyncMock())
+    api._connect_client.side_effect = APIConnectionError("proxy busy")
+    with pytest.raises(APIConnectionError, match="3 attempt.*nothing sent: proxy busy"):
+        await api.turn_on()
+    assert api._connect_client.await_count == 3
+    client.start_notify.assert_not_awaited()
+    client.write_gatt_char.assert_not_awaited()
+    assert not api._device_lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["connect", "backoff", "notify", "write"])
+async def test_retry_cancellation_releases_lock(setup_api, monkeypatch, phase):
+    import asyncio
+
+    api, client = setup_api
+    if phase == "connect":
+        api._connect_client.side_effect = asyncio.CancelledError
+    elif phase == "backoff":
+        api._connect_client.side_effect = APIConnectionError("busy")
+        monkeypatch.setattr(
+            "custom_components.solem_toolkit.api.asyncio.sleep",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        )
+    elif phase == "notify":
+        client.start_notify.side_effect = asyncio.CancelledError
+    else:
+        client.write_gatt_char.side_effect = asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        await api.turn_on()
+    assert api._connect_client.await_count == 1
+    assert not api._device_lock.locked()
+    if phase in ("notify", "write"):
+        client.disconnect.assert_awaited_once()
+    if phase == "write":
+        client.stop_notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connection_deadline_is_not_multiplied(setup_api):
+    import asyncio
+
+    api, client = setup_api
+    api.bluetooth_timeout = 0.01
+    cancelled = False
+
+    async def blocked():
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+
+    api._connect_client.side_effect = blocked
+    with pytest.raises(APIConnectionError, match="1 attempt.*nothing sent"):
+        await asyncio.wait_for(api.turn_on(), 0.2)
+    assert cancelled
+    assert api._connect_client.await_count == 1
+    client.write_gatt_char.assert_not_awaited()
+    assert not api._device_lock.locked()

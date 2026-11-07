@@ -26,12 +26,12 @@ from . import protocol
 from .const import (
     CHARACTERISTIC_UUID,
     COMMAND_ACK_TIMEOUT,
-    COMMAND_MAX_ATTEMPTS,
+    CONNECTION_MAX_ATTEMPTS,
     DEFAULT_BLUETOOTH_TIMEOUT,
     EVENT_DEVICE_STATUS,
     NOTIFY_CHARACTERISTIC_UUID,
     NOTIFY_SUBSCRIBE_TIMEOUT,
-    RETRY_BACKOFF_SECONDS,
+    CONNECTION_RETRY_BACKOFF_SECONDS,
     STATUS_COLLECT_SECONDS,
 )
 
@@ -169,13 +169,21 @@ class SolemAPI:
             _LOGGER.info(
                 "Solem %s - Device found, opening connection...", self.mac_address
             )
+        pending_clients: list[BleakClient] = []
+        connected = False
+
+        def make_client(*args, **kwargs):
+            # Keep ownership even if establish_connection is cancelled before
+            # returning. The connector does not guarantee cancellation cleanup.
+            client = BleakClient(*args, **kwargs)
+            pending_clients.append(client)
+            return client
+
         try:
-            # A single attempt here: retries are handled one level up in
-            # `_write_and_commit`, which retries the whole connect-write-commit
-            # cycle. Combining both layers used to multiply worst-case wait time
-            # (3 internal attempts x 2 outer attempts x timeout).
+            # One connector attempt: _connect_before_command owns the shared
+            # deadline and retry policy. Never nest connector retries.
             client = await establish_connection(
-                BleakClient,
+                make_client,
                 ble_device,
                 name=f"Solem - {self.mac_address}",
                 timeout=self.bluetooth_timeout,
@@ -183,6 +191,7 @@ class SolemAPI:
             )
             _LOGGER.info("Solem %s - Connection established.",
                          self.mac_address)
+            connected = True
             return client
         except BleakOutOfConnectionSlotsError as exc:
             _LOGGER.warning(
@@ -205,6 +214,49 @@ class SolemAPI:
             )
             raise APIConnectionError(
                 "Unexpected BLE connection error") from exc
+        finally:
+            if not connected:
+                for pending in pending_clients:
+                    await self._disconnect_client(pending)
+
+    async def _connect_before_command(self) -> BleakClient:
+        """Acquire a connection only, within one timeout including backoff.
+
+        All models and diagnostics use this policy while holding the device
+        lock. Never put notifications, reads or writes inside this retry loop.
+        _connect_client cleans up unsuccessful/cancelled acquisitions;
+        callers own disconnection once a client has been returned. Timeout
+        cancellation waits for cleanup, so teardown can exceed the deadline.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.bluetooth_timeout
+        for attempt in range(1, CONNECTION_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.wait_for(
+                    self._connect_client(), max(0.0, deadline - loop.time())
+                )
+            except (APIConnectionError, TimeoutError) as exc:
+                remaining = deadline - loop.time()
+                if attempt == CONNECTION_MAX_ATTEMPTS or remaining <= CONNECTION_RETRY_BACKOFF_SECONDS:
+                    detail = str(exc) or type(exc).__name__
+                    raise APIConnectionError(
+                        f"Solem connection failed after {attempt} attempt(s); "
+                        f"nothing sent: {detail}"
+                    ) from exc
+                _LOGGER.debug(
+                    "Solem %s - connection attempt %s failed: %s; retrying",
+                    self.mac_address, attempt, exc,
+                )
+                # Bound the pause too, not just the individual attempts.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.sleep(CONNECTION_RETRY_BACKOFF_SECONDS), remaining
+                    )
+                except TimeoutError:
+                    raise APIConnectionError(
+                        f"Solem connection budget exhausted after {attempt} attempt(s); "
+                        f"nothing sent: {str(exc) or type(exc).__name__}"
+                    ) from exc
 
     async def _disconnect_client(self, client: BleakClient) -> None:
         """Disconnect and log the outcome in human-readable form."""
@@ -221,7 +273,7 @@ class SolemAPI:
     async def list_characteristics(self) -> dict:
         """Return discovered services/characteristics (debug helper)."""
         async with self._device_lock:
-            client = await self._connect_client()
+            client = await self._connect_before_command()
             try:
                 if not client.is_connected:
                     raise APIConnectionError("Failed connecting!")
@@ -334,18 +386,7 @@ class SolemAPI:
     ) -> list[bytes]:
         """Retry connecting before a write, never replay an uncertain command."""
         async with self._device_lock:
-            last_error: APIConnectionError | None = None
-            client = None
-            for attempt in range(1, COMMAND_MAX_ATTEMPTS + 1):
-                try:
-                    client = await self._connect_client()
-                    break
-                except APIConnectionError as exc:
-                    last_error = exc
-                    if attempt < COMMAND_MAX_ATTEMPTS:
-                        await asyncio.sleep(RETRY_BACKOFF_SECONDS)
-            if client is None:
-                raise last_error or APIConnectionError("Unable to connect")
+            client = await self._connect_before_command()
 
             try:
                 if not client.is_connected:

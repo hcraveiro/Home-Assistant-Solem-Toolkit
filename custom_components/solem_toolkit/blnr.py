@@ -50,7 +50,7 @@ class BLNRAPI(SolemAPI):
         self, command: bytes, label: str, *, verify_commit: bool = False
     ) -> None:
         async with self._device_lock:
-            client = await self._connect_client()
+            client = await self._connect_before_command()
             notifications: list[bytes] = []
             reply_event = asyncio.Event()
 
@@ -175,7 +175,7 @@ class BLNRAPI(SolemAPI):
 
         expected_opcode = (opcode + 1) & 0xFF
         async with self._device_lock:
-            client = await self._connect_client()
+            client = await self._connect_before_command()
             frames: list[bytes] = []
             event = asyncio.Event()
 

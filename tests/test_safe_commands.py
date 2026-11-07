@@ -15,8 +15,8 @@ VALID_IDLE = bytes([0x32, 0x0B, 0x02, 0x40, 0, 0, 0, 0, 0, 0, 90, 0, 0])
 def api(monkeypatch):
     _DEVICE_LOCKS.clear()
     instance = SolemAPI(SimpleNamespace(data={}), MAC)
-    monkeypatch.setattr("custom_components.solem_toolkit.api.RETRY_BACKOFF_SECONDS", 0)
-    monkeypatch.setattr("custom_components.solem_toolkit.api.COMMAND_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr("custom_components.solem_toolkit.api.CONNECTION_RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr("custom_components.solem_toolkit.api.CONNECTION_MAX_ATTEMPTS", 3)
     monkeypatch.setattr("custom_components.solem_toolkit.api.COMMAND_ACK_TIMEOUT", 0.01)
     return instance
 
